@@ -30,6 +30,7 @@ type sabanoteOpts struct {
 	Delay      int      `arg:"--delay" help:"delay seconds before running command (0-29)" placeholder:"SECONDS"`
 	Force      bool     `arg:"--force" help:"force to write and post (for debug)"`
 	DryRun     bool     `arg:"--dry-run" help:"print an output instead of posting (for debug)"`
+	Verbose    bool     `arg:"--verbose" help:"print steps (for debug)"`
 }
 
 var version string
@@ -135,6 +136,9 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 	if err != nil {
 		return checkers.Unknown(fmt.Sprintf("failed to create state folder: %v", err))
 	}
+	if opts.Verbose {
+		fmt.Printf("[info] state folder: %s\n", opts.StateDir)
+	}
 
 	db, err := pogreb.Open(filepath.Join(opts.StateDir, "sabanote-db"), nil)
 
@@ -146,6 +150,9 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 	connection, alerts, err := getAlerts(client, opts)
 	if err != nil {
 		return checkers.Unknown(fmt.Sprintf("%v", err))
+	}
+	if opts.Verbose {
+		fmt.Printf("[info] connection status: %v, alerts: %v\n", connection, alerts)
 	}
 
 	err = matchAlert(db, connection, alerts, opts)
@@ -171,6 +178,9 @@ func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (bool, []*mackerel.A
 	resp, err := client.FindAlerts()
 	if err != nil {
 		if fmt.Sprintf("%T", err) == "*url.Error" { // FIXME: better check!
+			if opts.Verbose {
+				fmt.Printf("[info] url.Error: %v\n", err)
+			}
 			return false, nil, nil // maybe connection problem, may be recovered
 		} else {
 			return false, nil, err // *mackerel.APIError and something
@@ -184,6 +194,9 @@ func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (bool, []*mackerel.A
 			nextResp, err := client.FindAlertsByNextID(resp.NextID)
 			if err != nil {
 				return false, nil, err
+			}
+			if opts.Verbose {
+				fmt.Println("[info] getting next alert pages")
 			}
 			resp.Alerts = append(resp.Alerts, nextResp.Alerts...)
 			resp.NextID = nextResp.NextID
@@ -202,12 +215,21 @@ func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (bool, []*mackerel.A
 
 func matchAlert(db *pogreb.DB, connection bool, alerts []*mackerel.Alert, opts *sabanoteOpts) error {
 	if connection && !opts.Force {
+		if opts.Verbose {
+			fmt.Println("[info] connection is alive")
+		}
 		for _, alert := range alerts {
 			for _, monitor := range opts.Monitors {
 				if alert.Type != "check" && monitor != alert.MonitorID { // XXX: check monitor has dynamic ID
+					if opts.Verbose {
+						fmt.Printf("[info] monitorID: %s != targetID: %s\n", alert.MonitorID, monitor)
+					}
 					continue
 				}
 				if alert.HostID == "" || alert.HostID == opts.Host {
+					if opts.Verbose {
+						fmt.Printf("[info] alert.HostID: %s, targetHost: %s\n", alert.HostID, opts.Host)
+					}
 					err := writeInfo(db, opts)
 					if err != nil {
 						return err
@@ -218,6 +240,9 @@ func matchAlert(db *pogreb.DB, connection bool, alerts []*mackerel.Alert, opts *
 		}
 	} else {
 		// connection error. write info to DB
+		if opts.Verbose {
+			fmt.Println("[info] connection is dead (or --force is used)")
+		}
 		err := writeInfo(db, opts)
 		if err != nil {
 			return err
@@ -237,7 +262,7 @@ func writeInfo(db *pogreb.DB, opts *sabanoteOpts) error {
 	}
 
 	if opts.Cmd != "" {
-		out, err = execCmd(opts.Cmd)
+		out, err = execCmd(opts.Verbose, opts.Cmd)
 		if err != nil {
 			return err
 		}
@@ -264,7 +289,10 @@ func writeInfo(db *pogreb.DB, opts *sabanoteOpts) error {
 	return nil
 }
 
-func execCmd(name string, cmdargs ...string) ([]byte, error) {
+func execCmd(verbose bool, name string, cmdargs ...string) ([]byte, error) {
+	if verbose {
+		fmt.Printf("[info] execute: %s %s\n", name, cmdargs)
+	}
 	cmd := exec.Command(name, cmdargs...)
 	out, err := cmd.Output()
 	if err != nil {
@@ -276,30 +304,33 @@ func execCmd(name string, cmdargs ...string) ([]byte, error) {
 	if len(out) == 0 {
 		return nil, fmt.Errorf("command returns nothing")
 	}
+	if verbose {
+		fmt.Printf("[info] output: %s\n", string(out))
+	}
 	return out, nil
 }
 
 func getPSInfo_linux(opts *sabanoteOpts) ([]byte, error) {
 	if opts.MemorySort {
-		return execCmd("/bin/sh", "-c", "ps axc o %cpu,%mem,time,command --sort -%mem | head -n 20")
+		return execCmd(opts.Verbose, "/bin/sh", "-c", "ps axc o %cpu,%mem,time,command --sort -%mem | head -n 20")
 	} else {
-		return execCmd("/bin/sh", "-c", "ps axc o %cpu,%mem,time,command --sort -%cpu | head -n 20")
+		return execCmd(opts.Verbose, "/bin/sh", "-c", "ps axc o %cpu,%mem,time,command --sort -%cpu | head -n 20")
 	}
 }
 
 func getPSInfo_darwin(opts *sabanoteOpts) ([]byte, error) {
 	if opts.MemorySort {
-		return execCmd("/bin/sh", "-c", "ps axc -o %cpu,%mem,time,command -m | head -n 20")
+		return execCmd(opts.Verbose, "/bin/sh", "-c", "ps axc -o %cpu,%mem,time,command -m | head -n 20")
 	} else {
-		return execCmd("/bin/sh", "-c", "ps axc -o %cpu,%mem,time,command -r | head -n 20")
+		return execCmd(opts.Verbose, "/bin/sh", "-c", "ps axc -o %cpu,%mem,time,command -r | head -n 20")
 	}
 }
 
 func getPSInfo_windows(opts *sabanoteOpts) ([]byte, error) {
 	if opts.MemorySort {
-		return execCmd("powershell.exe", "-Command", "{Get-Process | Sort-Object -Property WS -Descending | Select-Object -First 20 CPU,WS,ProcessName | Format-Table -AutoSize | Out-String -Stream | ?{$_ -ne \"\"}}")
+		return execCmd(opts.Verbose, "powershell.exe", "-Command", "Get-Process | Sort-Object -Property WS -Descending | Select-Object -First 20 CPU,WS,ProcessName | Format-Table -AutoSize | Out-String -Stream | ?{$_ -ne \"\"}")
 	} else {
-		return execCmd("powershell.exe", "-Command", "{Get-Process | Sort-Object -Property CPU -Descending | Select-Object -First 20 CPU,WS,ProcessName | Format-Table -AutoSize | Out-String -Stream | ?{$_ -ne \"\"}}")
+		return execCmd(opts.Verbose, "powershell.exe", "-Command", "Get-Process | Sort-Object -Property CPU -Descending | Select-Object -First 20 CPU,WS,ProcessName | Format-Table -AutoSize | Out-String -Stream | ?{$_ -ne \"\"}")
 	}
 }
 
@@ -345,11 +376,17 @@ func postInfo(client *mackerel.Client, db *pogreb.DB, opts *sabanoteOpts) error 
 				if err != nil {
 					return err
 				}
+				if opts.Verbose {
+					fmt.Printf("[info] annotation: %v\n", annotation)
+				}
 			}
 		}
 		err = db.Delete([]byte(key))
 		if err != nil {
 			return err
+		}
+		if opts.Verbose {
+			fmt.Printf("[info] deleted entry: %s\n", string(key))
 		}
 	}
 
