@@ -18,10 +18,12 @@ import (
 type sabanoteOpts struct {
 	Host       string   `arg:"-H,--host" help:"host ID" placeholder:"HOST_ID"`
 	Monitors   []string `arg:"-m,--monitor,separate,required" help:"monitor ID (accept multiple)" placeholder:"MONITOR_ID"`
-	Services   []string `arg:"-s,--service,separate,required" help:"target service:role or service (accept multiple)" placeholder:"SERVICE:ROLE"`
+	Service    string   `arg:"-s,--service,required" help:"target service" placeholder:"SERVICE"`
+	Roles      []string `arg:"-r,--role,required" help:"target role (accept multiple)" placeholder:"ROLE"`
 	StateDir   string   `arg:"--state" help:"state file folder" placeholder:"DIR"`
 	Cmd        string   `arg:"-c,--cmd" help:"custom command path" placeholder:"CMD_PATH"`
 	MemorySort bool     `arg:"--mem" help:"sort by memory size (sort by CPU% by default)"`
+	Force      bool     `arg:"--force" help:"force to write and post (for debug)"`
 }
 
 var version string
@@ -82,15 +84,20 @@ func fileExists(filename string) bool {
 
 func (opts *sabanoteOpts) run() *checkers.Checker {
 	apikey := os.Getenv("MACKEREL_APIKEY")
+	apibase := os.Getenv("MACKEREL_APIBASE")
+
+	timeOut := 5 * time.Second // quick give up
 
 	conf, err := config.LoadConfig(config.DefaultConfig.Conffile)
 	if err != nil {
 		return checkers.Unknown(fmt.Sprintf("%v", err))
 	}
 
-	apibase := conf.Apibase
 	if apikey == "" {
 		apikey = conf.Apikey
+	}
+	if apibase == "" {
+		apibase = conf.Apibase
 	}
 	if apibase == "" || apikey == "" {
 		return checkers.Unknown("Not found apibase or apikey in " + config.DefaultConfig.Conffile)
@@ -105,6 +112,7 @@ func (opts *sabanoteOpts) run() *checkers.Checker {
 	}
 
 	client, err := mackerel.NewClientWithOptions(apikey, apibase, false)
+	client.HTTPClient.Timeout = timeOut
 	if err != nil {
 		return checkers.Unknown(fmt.Sprintf("%v", err))
 	}
@@ -126,50 +134,65 @@ func findAlert(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 	}
 	defer db.Close()
 
+	connection := true
 	resp, err := client.FindAlerts()
 	if err != nil {
-		// FIXME
-	}
-
-	// next page
-	if resp.NextID != "" {
-		for {
-			if limit <= len(resp.Alerts) {
-				break
-			}
-			nextResp, err := client.FindAlertsByNextID(resp.NextID)
-			if err != nil {
-				// FIXME
-			}
-			resp.Alerts = append(resp.Alerts, nextResp.Alerts...)
-			resp.NextID = nextResp.NextID
-			if resp.NextID == "" {
-				break
-			}
-			time.Sleep(1 * time.Second)
+		if fmt.Sprintf("%T", err) == "*url.Error" { // FIXME: better check!
+			connection = false // suspect as connection problem
+		} else {
+			return checkers.Unknown(fmt.Sprintf("%v", err)) // *mackerel.APIError and something
 		}
 	}
-	if len(resp.Alerts) > limit {
-		resp.Alerts = resp.Alerts[:limit]
-	}
-	for _, alert := range resp.Alerts {
-		for _, monitor := range opts.Monitors {
-			if monitor != alert.MonitorID {
-				continue
-			}
-			if alert.HostID == "" || alert.HostID == opts.Host {
-				err := writeInfo(db, opts)
+
+	if connection && !opts.Force {
+		if resp.NextID != "" {
+			for {
+				if limit <= len(resp.Alerts) {
+					break
+				}
+				nextResp, err := client.FindAlertsByNextID(resp.NextID)
 				if err != nil {
-					// FIXME
-					fmt.Println(err)
+					return checkers.Unknown(fmt.Sprintf("%v", err))
+				}
+				resp.Alerts = append(resp.Alerts, nextResp.Alerts...)
+				resp.NextID = nextResp.NextID
+				if resp.NextID == "" {
+					break
+				}
+				time.Sleep(1 * time.Second)
+			}
+		}
+		if len(resp.Alerts) > limit {
+			resp.Alerts = resp.Alerts[:limit]
+		}
+		for _, alert := range resp.Alerts {
+			for _, monitor := range opts.Monitors {
+				if monitor != alert.MonitorID {
+					continue
+				}
+				if alert.HostID == "" || alert.HostID == opts.Host {
+					err := writeInfo(db, opts)
+					if err != nil {
+						return checkers.Unknown(fmt.Sprintf("%v", err))
+					}
 				}
 			}
 		}
+	} else {
+		// seems connection error. write DB
+		err := writeInfo(db, opts)
+		if err != nil {
+			return checkers.Unknown(fmt.Sprintf("%v", err))
+		}
 	}
-	// FIXME: POST!
-	err = postInfo(client, db, opts)
-	if err != nil {
-		// FIXME
+
+	if connection {
+		err = postInfo(client, db, opts)
+		if err != nil {
+			return checkers.Ok(fmt.Sprintf("post failure: %v", err))
+		}
+	} else {
+		return checkers.Ok("connection failure")
 	}
 
 	return checkers.Ok("running")
@@ -177,9 +200,9 @@ func findAlert(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 
 func writeInfo(db *pogreb.DB, opts *sabanoteOpts) error {
 	// write
-	currentTime := time.Now().Unix()
+	now := time.Now().Unix()
 	// FIXME:call process nad get stdout
-	err := db.Put([]byte(strconv.FormatInt(currentTime, 10)), []byte("BBBBB"))
+	err := db.Put([]byte(strconv.FormatInt(now, 10)), []byte("BBBBB"))
 	if err != nil {
 		return err
 	}
@@ -187,9 +210,14 @@ func writeInfo(db *pogreb.DB, opts *sabanoteOpts) error {
 }
 
 func postInfo(client *mackerel.Client, db *pogreb.DB, opts *sabanoteOpts) error {
-	// post and remove
+	countLimit := 10
+	postLimit := int64(48 * 24) // 48 hours ago
+	annotationDuration := int64(30)
+
+	now := time.Now().Unix()
+
 	it := db.Items()
-	for {
+	for i := 0; i < countLimit; i++ {
 		key, val, err := it.Next()
 		if err == pogreb.ErrIterationDone {
 			break
@@ -197,11 +225,26 @@ func postInfo(client *mackerel.Client, db *pogreb.DB, opts *sabanoteOpts) error 
 		if err != nil {
 			return err
 		}
-		// FIXME:post by API
-		fmt.Printf("POST %s: %s\n", key, val)
+		if i > 0 {
+			time.Sleep(1 * time.Second)
+		}
+
+		keyTime, _ := strconv.ParseInt(string(key), 10, 64)
+		if keyTime <= now && keyTime > now-postLimit {
+			annotation := &mackerel.GraphAnnotation{
+				Title:       fmt.Sprintf("Host %s", opts.Host), // XXX: better Title? option?
+				Description: string(val),
+				From:        keyTime,
+				To:          keyTime + annotationDuration, // XXX
+				Service:     opts.Service,
+				Roles:       opts.Roles,
+			}
+			_, err := client.CreateGraphAnnotation(annotation)
+			if err != nil {
+				return err
+			}
+		}
 		db.Delete([]byte(key))
-		time.Sleep(1 * time.Second)
-		// FIXME:stop by 10 times
 	}
 
 	return nil
