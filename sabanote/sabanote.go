@@ -15,6 +15,7 @@ import (
 	"github.com/mackerelio/golib/pluginutil"
 	"github.com/mackerelio/mackerel-agent/config"
 	"github.com/mackerelio/mackerel-client-go"
+	"github.com/mackerelio/mkr/format"
 )
 
 type sabanoteOpts struct {
@@ -28,6 +29,7 @@ type sabanoteOpts struct {
 	StateDir   string   `arg:"--state" help:"state file folder" placeholder:"DIR"`
 	Delay      int      `arg:"--delay" help:"delay seconds before running command (0-29)" placeholder:"SECONDS"`
 	Force      bool     `arg:"--force" help:"force to write and post (for debug)"`
+	DryRun     bool     `arg:"--dry-run" help:"print an output instead of posting (for debug)"`
 }
 
 var version string
@@ -128,6 +130,41 @@ func (opts *sabanoteOpts) run() *checkers.Checker {
 	return handleInfo(client, opts)
 }
 
+func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (*checkers.Checker, bool, []*mackerel.Alert) {
+	const limit = 50 // XXX: takes max 50 alerts
+
+	resp, err := client.FindAlerts()
+	if err != nil {
+		if fmt.Sprintf("%T", err) == "*url.Error" { // FIXME: better check!
+			return nil, false, nil // maybe connection problem, may be recovered
+		} else {
+			return checkers.Unknown(fmt.Sprintf("%v", err)), false, nil // *mackerel.APIError and something
+		}
+	}
+	if resp.NextID != "" {
+		for {
+			if limit <= len(resp.Alerts) {
+				break
+			}
+			nextResp, err := client.FindAlertsByNextID(resp.NextID)
+			if err != nil {
+				return checkers.Unknown(fmt.Sprintf("%v", err)), false, nil
+			}
+			resp.Alerts = append(resp.Alerts, nextResp.Alerts...)
+			resp.NextID = nextResp.NextID
+			if resp.NextID == "" {
+				break
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}
+	if len(resp.Alerts) > limit {
+		resp.Alerts = resp.Alerts[:limit]
+	}
+
+	return nil, true, resp.Alerts
+}
+
 func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker { // XXX: better name. it may need refactoring
 	const limit = 50 // XXX: takes max 50 alerts
 
@@ -175,7 +212,7 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 		}
 		for _, alert := range resp.Alerts {
 			for _, monitor := range opts.Monitors {
-				if monitor != alert.MonitorID {
+				if alert.Type != "check" && monitor != alert.MonitorID { // XXX: check monitor has dynamic ID
 					continue
 				}
 				if alert.HostID == "" || alert.HostID == opts.Host {
@@ -183,6 +220,7 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 					if err != nil {
 						return checkers.Unknown(fmt.Sprintf("%v", err))
 					}
+					break // FIXME: break more
 				}
 			}
 		}
@@ -318,9 +356,13 @@ func postInfo(client *mackerel.Client, db *pogreb.DB, opts *sabanoteOpts) error 
 				Service:     opts.Service,
 				Roles:       opts.Roles,
 			}
-			_, err := client.CreateGraphAnnotation(annotation)
-			if err != nil {
-				return err
+			if opts.DryRun {
+				format.PrettyPrintJSON(os.Stdout, annotation, "")
+			} else {
+				_, err := client.CreateGraphAnnotation(annotation)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		db.Delete([]byte(key))
