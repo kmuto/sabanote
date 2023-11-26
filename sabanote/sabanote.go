@@ -130,15 +130,50 @@ func (opts *sabanoteOpts) run() *checkers.Checker {
 	return handleInfo(client, opts)
 }
 
-func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (*checkers.Checker, bool, []*mackerel.Alert) {
+func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker { // XXX: better name
+	err := os.MkdirAll(opts.StateDir, 0755)
+	if err != nil {
+		return checkers.Unknown(fmt.Sprintf("failed to create state folder: %v", err))
+	}
+
+	db, err := pogreb.Open(filepath.Join(opts.StateDir, "sabanote-db"), nil)
+
+	if err != nil {
+		return checkers.Unknown(fmt.Sprintf("failed to create sabanote-db: %v", err))
+	}
+	defer db.Close()
+
+	connection, alerts, err := getAlerts(client, opts)
+	if err != nil {
+		return checkers.Unknown(fmt.Sprintf("%v", err))
+	}
+
+	err = matchAlert(db, connection, alerts, opts)
+	if err != nil {
+		return checkers.Unknown(fmt.Sprintf("%v", err))
+	}
+
+	if connection {
+		err = postInfo(client, db, opts)
+		if err != nil {
+			return checkers.Ok(fmt.Sprintf("post failure: %v", err))
+		}
+	} else {
+		return checkers.Ok("connection failure")
+	}
+
+	return checkers.Ok("running")
+}
+
+func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (bool, []*mackerel.Alert, error) {
 	const limit = 50 // XXX: takes max 50 alerts
 
 	resp, err := client.FindAlerts()
 	if err != nil {
 		if fmt.Sprintf("%T", err) == "*url.Error" { // FIXME: better check!
-			return nil, false, nil // maybe connection problem, may be recovered
+			return false, nil, nil // maybe connection problem, may be recovered
 		} else {
-			return checkers.Unknown(fmt.Sprintf("%v", err)), false, nil // *mackerel.APIError and something
+			return false, nil, err // *mackerel.APIError and something
 		}
 	}
 	if resp.NextID != "" {
@@ -148,7 +183,7 @@ func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (*checkers.Checker, 
 			}
 			nextResp, err := client.FindAlertsByNextID(resp.NextID)
 			if err != nil {
-				return checkers.Unknown(fmt.Sprintf("%v", err)), false, nil
+				return false, nil, err
 			}
 			resp.Alerts = append(resp.Alerts, nextResp.Alerts...)
 			resp.NextID = nextResp.NextID
@@ -162,55 +197,12 @@ func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (*checkers.Checker, 
 		resp.Alerts = resp.Alerts[:limit]
 	}
 
-	return nil, true, resp.Alerts
+	return true, resp.Alerts, nil
 }
 
-func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker { // XXX: better name. it may need refactoring
-	const limit = 50 // XXX: takes max 50 alerts
-
-	err := os.MkdirAll(opts.StateDir, 0755)
-	if err != nil {
-		return checkers.Unknown(fmt.Sprintf("failed to create state folder: %v", err))
-	}
-
-	db, err := pogreb.Open(filepath.Join(opts.StateDir, "sabanote-db"), nil)
-	if err != nil {
-		return checkers.Unknown(fmt.Sprintf("failed to create sabanote-db: %v", err))
-	}
-	defer db.Close()
-
-	connection := true
-	resp, err := client.FindAlerts()
-	if err != nil {
-		if fmt.Sprintf("%T", err) == "*url.Error" { // FIXME: better check!
-			connection = false // maybe connection problem, may be recovered
-		} else {
-			return checkers.Unknown(fmt.Sprintf("%v", err)) // *mackerel.APIError and something
-		}
-	}
-
+func matchAlert(db *pogreb.DB, connection bool, alerts []*mackerel.Alert, opts *sabanoteOpts) error {
 	if connection && !opts.Force {
-		if resp.NextID != "" {
-			for {
-				if limit <= len(resp.Alerts) {
-					break
-				}
-				nextResp, err := client.FindAlertsByNextID(resp.NextID)
-				if err != nil {
-					return checkers.Unknown(fmt.Sprintf("%v", err))
-				}
-				resp.Alerts = append(resp.Alerts, nextResp.Alerts...)
-				resp.NextID = nextResp.NextID
-				if resp.NextID == "" {
-					break
-				}
-				time.Sleep(1 * time.Second)
-			}
-		}
-		if len(resp.Alerts) > limit {
-			resp.Alerts = resp.Alerts[:limit]
-		}
-		for _, alert := range resp.Alerts {
+		for _, alert := range alerts {
 			for _, monitor := range opts.Monitors {
 				if alert.Type != "check" && monitor != alert.MonitorID { // XXX: check monitor has dynamic ID
 					continue
@@ -218,9 +210,9 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 				if alert.HostID == "" || alert.HostID == opts.Host {
 					err := writeInfo(db, opts)
 					if err != nil {
-						return checkers.Unknown(fmt.Sprintf("%v", err))
+						return err
 					}
-					break // FIXME: break more
+					return nil // XXX: avoid duplicate posting
 				}
 			}
 		}
@@ -228,20 +220,10 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 		// connection error. write info to DB
 		err := writeInfo(db, opts)
 		if err != nil {
-			return checkers.Unknown(fmt.Sprintf("%v", err))
+			return err
 		}
 	}
-
-	if connection {
-		err = postInfo(client, db, opts)
-		if err != nil {
-			return checkers.Ok(fmt.Sprintf("post failure: %v", err))
-		}
-	} else {
-		return checkers.Ok("connection failure")
-	}
-
-	return checkers.Ok("running")
+	return nil
 }
 
 func writeInfo(db *pogreb.DB, opts *sabanoteOpts) error {
@@ -365,7 +347,10 @@ func postInfo(client *mackerel.Client, db *pogreb.DB, opts *sabanoteOpts) error 
 				}
 			}
 		}
-		db.Delete([]byte(key))
+		err = db.Delete([]byte(key))
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
