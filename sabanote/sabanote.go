@@ -3,7 +3,9 @@ package sabanote
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -20,16 +22,18 @@ type sabanoteOpts struct {
 	Monitors   []string `arg:"-m,--monitor,separate,required" help:"monitor ID (accept multiple)" placeholder:"MONITOR_ID"`
 	Service    string   `arg:"-s,--service,required" help:"target service" placeholder:"SERVICE"`
 	Roles      []string `arg:"-r,--role,required" help:"target role (accept multiple)" placeholder:"ROLE"`
-	StateDir   string   `arg:"--state" help:"state file folder" placeholder:"DIR"`
-	Cmd        string   `arg:"-c,--cmd" help:"custom command path" placeholder:"CMD_PATH"`
+	Title      string   `arg:"--title" help:"annotation title (default: 'Host HOST_ID')" placeholder:"TITLE"`
 	MemorySort bool     `arg:"--mem" help:"sort by memory size (sort by CPU% by default)"`
+	Cmd        string   `arg:"-c,--cmd" help:"custom command path" placeholder:"CMD_PATH"`
+	StateDir   string   `arg:"--state" help:"state file folder" placeholder:"DIR"`
+	Delay      int      `arg:"--delay" help:"delay seconds before running command (0-29)" placeholder:"SECONDS"`
 	Force      bool     `arg:"--force" help:"force to write and post (for debug)"`
 }
 
 var version string
 var revision string
 
-// for go-arg interface
+// interface implementation for go-arg
 func (sabanoteOpts) Version() string {
 	return fmt.Sprintf("version %s (rev %s)", version, revision)
 }
@@ -70,8 +74,12 @@ func parseArgs(args []string) (*sabanoteOpts, error) {
 		err = fmt.Errorf("not found %s", so.Cmd)
 	}
 
+	if so.Delay < 0 || so.Delay > 29 {
+		err = fmt.Errorf("the value of --delay must be in the range 0 to 29")
+	}
+
 	if so.StateDir == "" {
-		so.StateDir = filepath.Join(pluginutil.PluginWorkDir(), "sabanote")
+		so.StateDir = filepath.Join(pluginutil.PluginWorkDir(), "__sabanote")
 	}
 
 	return &so, err
@@ -100,13 +108,13 @@ func (opts *sabanoteOpts) run() *checkers.Checker {
 		apibase = conf.Apibase
 	}
 	if apibase == "" || apikey == "" {
-		return checkers.Unknown("Not found apibase or apikey in " + config.DefaultConfig.Conffile)
+		return checkers.Unknown("not found apibase or apikey in " + config.DefaultConfig.Conffile)
 	}
 
 	if opts.Host == "" {
 		id, err := conf.LoadHostID()
 		if err != nil {
-			return checkers.Unknown("Not found host ID from this environment. Specify host ID by --host")
+			return checkers.Unknown("not found host ID in this environment. Specify host ID by --host")
 		}
 		opts.Host = id
 	}
@@ -117,20 +125,20 @@ func (opts *sabanoteOpts) run() *checkers.Checker {
 		return checkers.Unknown(fmt.Sprintf("%v", err))
 	}
 
-	return findAlert(client, opts)
+	return handleInfo(client, opts)
 }
 
-func findAlert(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
-	const limit = 50 // XXX: limit for taking Alerts
+func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker { // XXX: better name. it may need refactoring
+	const limit = 50 // XXX: takes max 50 alerts
 
 	err := os.MkdirAll(opts.StateDir, 0755)
 	if err != nil {
 		return checkers.Unknown(fmt.Sprintf("failed to create state folder: %v", err))
 	}
 
-	db, err := pogreb.Open(filepath.Join(opts.StateDir, "sabanote.db"), nil)
+	db, err := pogreb.Open(filepath.Join(opts.StateDir, "sabanote-db"), nil)
 	if err != nil {
-		return checkers.Unknown(fmt.Sprintf("failed to create sabanote.db: %v", err))
+		return checkers.Unknown(fmt.Sprintf("failed to create sabanote-db: %v", err))
 	}
 	defer db.Close()
 
@@ -138,7 +146,7 @@ func findAlert(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 	resp, err := client.FindAlerts()
 	if err != nil {
 		if fmt.Sprintf("%T", err) == "*url.Error" { // FIXME: better check!
-			connection = false // suspect as connection problem
+			connection = false // maybe connection problem, may be recovered
 		} else {
 			return checkers.Unknown(fmt.Sprintf("%v", err)) // *mackerel.APIError and something
 		}
@@ -179,7 +187,7 @@ func findAlert(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 			}
 		}
 	} else {
-		// seems connection error. write DB
+		// connection error. write info to DB
 		err := writeInfo(db, opts)
 		if err != nil {
 			return checkers.Unknown(fmt.Sprintf("%v", err))
@@ -201,18 +209,84 @@ func findAlert(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 func writeInfo(db *pogreb.DB, opts *sabanoteOpts) error {
 	// write
 	now := time.Now().Unix()
-	// FIXME:call process nad get stdout
-	err := db.Put([]byte(strconv.FormatInt(now, 10)), []byte("BBBBB"))
+	var out []byte
+	var err error
+
+	if opts.Delay > 0 {
+		time.Sleep(time.Duration(opts.Delay) * time.Second)
+	}
+
+	if opts.Cmd != "" {
+		out, err = execCmd(opts.Cmd)
+		if err != nil {
+			return err
+		}
+	} else {
+		switch runtime.GOOS {
+		case "linux":
+			out, err = getPSInfo_linux(opts)
+		case "darwin":
+			out, err = getPSInfo_darwin(opts)
+		case "windows":
+			out, err = getPSInfo_windows(opts)
+		default:
+			err = fmt.Errorf("unsupported OS")
+		}
+	}
+	if err != nil {
+		return err
+	}
+
+	err = db.Put([]byte(strconv.FormatInt(now, 10)), out)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
+func execCmd(name string, cmdargs ...string) ([]byte, error) {
+	cmd := exec.Command(name, cmdargs...)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > 1023 {
+		out = out[:1023]
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("command returns nothing")
+	}
+	return out, nil
+}
+
+func getPSInfo_linux(opts *sabanoteOpts) ([]byte, error) {
+	if opts.MemorySort {
+		return execCmd("/bin/sh", "-c", "ps axc o %cpu,%mem,time,command --sort -%mem | head -n 20")
+	} else {
+		return execCmd("/bin/sh", "-c", "ps axc o %cpu,%mem,time,command --sort -%cpu | head -n 20")
+	}
+}
+
+func getPSInfo_darwin(opts *sabanoteOpts) ([]byte, error) {
+	if opts.MemorySort {
+		return execCmd("/bin/sh", "-c", "ps axc -o %cpu,%mem,time,command -m | head -n 20")
+	} else {
+		return execCmd("/bin/sh", "-c", "ps axc -o %cpu,%mem,time,command -r | head -n 20")
+	}
+}
+
+func getPSInfo_windows(opts *sabanoteOpts) ([]byte, error) {
+	if opts.MemorySort {
+		return execCmd("powershell.exe", "-Command", "{Get-Process | Sort-Object -Property WS -Descending | Select-Object -First 20 CPU,WS,ProcessName | Format-Table -AutoSize | Out-String -Stream | ?{$_ -ne \"\"}}")
+	} else {
+		return execCmd("powershell.exe", "-Command", "{Get-Process | Sort-Object -Property CPU -Descending | Select-Object -First 20 CPU,WS,ProcessName | Format-Table -AutoSize | Out-String -Stream | ?{$_ -ne \"\"}}")
+	}
+}
+
 func postInfo(client *mackerel.Client, db *pogreb.DB, opts *sabanoteOpts) error {
-	countLimit := 10
-	postLimit := int64(48 * 24) // 48 hours ago
-	annotationDuration := int64(30)
+	countLimit := 10                // max posts per once running
+	postLimit := int64(48 * 24)     // drop posts if it overs 48 hours ago
+	annotationDuration := int64(30) // set annotation endtime to now + 30 seconds
 
 	now := time.Now().Unix()
 
@@ -229,13 +303,18 @@ func postInfo(client *mackerel.Client, db *pogreb.DB, opts *sabanoteOpts) error 
 			time.Sleep(1 * time.Second)
 		}
 
+		title := opts.Title
+		if opts.Title == "" {
+			title = fmt.Sprintf("Host %s", opts.Host)
+		}
 		keyTime, _ := strconv.ParseInt(string(key), 10, 64)
+
 		if keyTime <= now && keyTime > now-postLimit {
 			annotation := &mackerel.GraphAnnotation{
-				Title:       fmt.Sprintf("Host %s", opts.Host), // XXX: better Title? option?
+				Title:       title,
 				Description: string(val),
 				From:        keyTime,
-				To:          keyTime + annotationDuration, // XXX
+				To:          keyTime + annotationDuration,
 				Service:     opts.Service,
 				Roles:       opts.Roles,
 			}
