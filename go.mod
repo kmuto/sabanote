@@ -1,6 +1,6 @@
 module github.com/kmuto/sabanote
 
-go 1.21.0
+go 1.21
 
 require (
 	github.com/akrylysov/pogreb v0.10.1
