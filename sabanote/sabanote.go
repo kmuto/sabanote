@@ -370,7 +370,7 @@ func postInfo(client *mackerel.Client, db *pogreb.DB, opts *sabanoteOpts) error 
 				Roles:       opts.Roles,
 			}
 			if opts.DryRun {
-				format.PrettyPrintJSON(os.Stdout, annotation, "")
+				_ = format.PrettyPrintJSON(os.Stdout, annotation, "")
 			} else {
 				_, err := client.CreateGraphAnnotation(annotation)
 				if err != nil {
