@@ -24,7 +24,7 @@ type sabanoteOpts struct {
 	Host       string   `arg:"-H,--host" help:"host ID" placeholder:"HOST_ID"`
 	Monitors   []string `arg:"-m,--monitor,separate,required" help:"monitor ID (accept multiple)" placeholder:"MONITOR_ID"`
 	Service    string   `arg:"-s,--service,required" help:"target service" placeholder:"SERVICE"`
-	Roles      []string `arg:"-r,--role,required" help:"target role (accept multiple)" placeholder:"ROLE"`
+	Roles      []string `arg:"-r,--role,separate,required" help:"target role (accept multiple)" placeholder:"ROLE"`
 	Title      string   `arg:"--title" help:"annotation title (default: 'Host <HOST> status when <ALERT> is alerted (<TIME>)')" placeholder:"TITLE"`
 	MemorySort bool     `arg:"--mem" help:"sort by memory size (sort by CPU% by default)"`
 	Cmd        string   `arg:"-c,--cmd" help:"custom command path" placeholder:"CMD_PATH"`
@@ -33,9 +33,9 @@ type sabanoteOpts struct {
 	After      int      `arg:"--after" help:"post the report N times after the alert occured (0-5)" default:"1" placeholder:"MINUTES"`
 	AlertFreq  int      `arg:"--alert-frequency" help:"how many minutes to check alerts every (0 (don't check alert), 2-30)" default:"5" placeholder:"MINUTES"`
 	Delay      int      `arg:"--delay" help:"delay seconds before running command (0-29)" default:"0" placeholder:"SECONDS"`
-	Force      bool     `arg:"--force" help:"force to write and post (for debug)"`
 	DryRun     bool     `arg:"--dry-run" help:"print an output instead of posting (for debug)"`
 	Verbose    bool     `arg:"--verbose" help:"print steps to stderr (for debug)"`
+	Test       bool
 }
 
 var version string
@@ -74,16 +74,16 @@ func parseArgs(args []string) (*sabanoteOpts, error) {
 		return &so, err
 	}
 
-	if so.MemorySort && so.Cmd != "" {
-		err = fmt.Errorf("both --mem and --cmd cannot be specified")
-	}
-
 	if so.Cmd != "" && !fileExists(so.Cmd) {
 		err = fmt.Errorf("not found %s", so.Cmd)
 	}
 
+	if so.MemorySort && so.Cmd != "" {
+		err = fmt.Errorf("both --mem and --cmd cannot be specified")
+	}
+
 	if so.AlertFreq != 0 && (so.AlertFreq < 2 || so.AlertFreq > 30) {
-		err = fmt.Errorf("the value of --alert-frequency must in the range 2 to 30, or 0")
+		err = fmt.Errorf("the value of --alert-frequency must be in the range 2 to 30, or 0")
 	}
 
 	if so.Before < 0 || so.Before > 5 {
@@ -208,7 +208,7 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 		fmt.Fprintf(os.Stderr, "[info] connection status: %v, alerts size: %v\n", connection, len(alerts))
 	}
 
-	alert, err := matchAlert(db, connection, alerts, now, opts)
+	alert, err := matchAlert(connection, alerts, opts)
 	if err != nil {
 		return checkers.Unknown(fmt.Sprintf("%v", err))
 	}
@@ -264,43 +264,33 @@ func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (bool, []*mackerel.A
 	if len(resp.Alerts) > maxNumAlerts {
 		resp.Alerts = resp.Alerts[:maxNumAlerts]
 	}
-
 	return true, resp.Alerts, nil
 }
 
-func matchAlert(db *pogreb.DB, connection bool, alerts []*mackerel.Alert, now int64, opts *sabanoteOpts) (*mackerel.Alert, error) {
-	if connection && !opts.Force {
+func matchAlert(connection bool, alerts []*mackerel.Alert, opts *sabanoteOpts) (*mackerel.Alert, error) {
+	if !connection {
 		if opts.Verbose {
-			fmt.Fprintln(os.Stderr, "[info] connection is alive")
+			fmt.Fprintln(os.Stderr, "[info] connection is dead")
 		}
-		for _, alert := range alerts {
-			for _, monitor := range opts.Monitors {
-				if alert.Type != "check" && monitor != alert.MonitorID { // XXX: check monitor has dynamic ID
-					if opts.Verbose {
-						fmt.Fprintf(os.Stderr, "[info] monitorID: %s != targetID: %s\n", alert.MonitorID, monitor)
-					}
-					continue
+		return nil, nil
+	}
+	if opts.Verbose {
+		fmt.Fprintln(os.Stderr, "[info] connection is alive")
+	}
+	for _, alert := range alerts {
+		for _, monitor := range opts.Monitors {
+			if alert.Type != "check" && monitor != alert.MonitorID { // XXX: check monitor has dynamic ID
+				if opts.Verbose {
+					fmt.Fprintf(os.Stderr, "[info] monitorID: %s != targetID: %s\n", alert.MonitorID, monitor)
 				}
-				if alert.HostID == "" || alert.HostID == opts.Host {
-					if opts.Verbose {
-						fmt.Fprintf(os.Stderr, "[info] alert.HostID: %s, targetHost: %s\n", alert.HostID, opts.Host)
-					}
-					err := writeInfo(db, now, opts)
-					if err != nil {
-						return nil, err
-					}
-					return alert, nil // XXX: avoid duplicate posting
-				}
+				continue
 			}
-		}
-	} else {
-		// connection error. write info to DB
-		if opts.Verbose {
-			fmt.Fprintln(os.Stderr, "[info] connection is dead (or --force is used)")
-		}
-		err := writeInfo(db, now, opts)
-		if err != nil {
-			return nil, err
+			if alert.HostID == "" || alert.HostID == opts.Host {
+				if opts.Verbose {
+					fmt.Fprintf(os.Stderr, "[info] alert.HostID: %s, targetHost: %s\n", alert.HostID, opts.Host)
+				}
+				return alert, nil // XXX: avoid duplicate posting. but it should be reconsidered
+			}
 		}
 	}
 	return nil, nil
@@ -321,15 +311,19 @@ func writeInfo(db *pogreb.DB, now int64, opts *sabanoteOpts) error {
 			return err
 		}
 	} else {
-		switch runtime.GOOS {
-		case "linux":
-			out, err = getPSInfo_linux(opts)
-		case "darwin":
-			out, err = getPSInfo_darwin(opts)
-		case "windows":
-			out, err = getPSInfo_windows(opts)
-		default:
-			err = fmt.Errorf("unsupported OS")
+		if opts.Test {
+			out = []byte(fmt.Sprintf("Result %d", now))
+		} else {
+			switch runtime.GOOS {
+			case "linux":
+				out, err = getPSInfo_linux(opts)
+			case "darwin":
+				out, err = getPSInfo_darwin(opts)
+			case "windows":
+				out, err = getPSInfo_windows(opts)
+			default:
+				err = fmt.Errorf("unsupported OS")
+			}
 		}
 	}
 	if err != nil {
@@ -415,7 +409,7 @@ func postInfo(alert *mackerel.Alert, client *mackerel.Client, db *pogreb.DB, opt
 			continue
 		}
 
-		if postCount > 0 {
+		if postCount > 0 && !opts.Test {
 			time.Sleep(1 * time.Second)
 		}
 		postCount++
