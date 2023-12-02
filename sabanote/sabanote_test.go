@@ -290,7 +290,7 @@ func TestWriteInfo(t *testing.T) {
 	db, _ := pogreb.Open(opts.StateDir, nil)
 	defer db.Close()
 
-	writeInfo(db, 1000, opts)
+	_ = writeInfo(db, 1000, opts)
 	v, _ := db.Get([]byte("1000"))
 	assert.Equal(t, "Result 1000", string(v), "string is written")
 	v, _ = db.Get([]byte("0"))
@@ -317,15 +317,15 @@ func TestPostInfo(t *testing.T) {
 	db, _ := pogreb.Open(opts.StateDir, nil)
 	defer db.Close()
 
-	writeInfo(db, 1000-60*4, opts)
-	writeInfo(db, 1000-60*3, opts)
-	writeInfo(db, 1000-60*2, opts)
-	writeInfo(db, 1000-60*1, opts)
-	writeInfo(db, 1000, opts)
-	writeInfo(db, 1000+60*1, opts)
-	writeInfo(db, 1000+60*2, opts)
-	writeInfo(db, 1000+60*3, opts)
-	writeInfo(db, 10000, opts)
+	_ = writeInfo(db, 1000-60*4, opts)
+	_ = writeInfo(db, 1000-60*3, opts)
+	_ = writeInfo(db, 1000-60*2, opts)
+	_ = writeInfo(db, 1000-60*1, opts)
+	_ = writeInfo(db, 1000, opts)
+	_ = writeInfo(db, 1000+60*1, opts)
+	_ = writeInfo(db, 1000+60*2, opts)
+	_ = writeInfo(db, 1000+60*3, opts)
+	_ = writeInfo(db, 10000, opts)
 
 	ts := AlertServer(nil)
 	defer ts.Close()
@@ -334,7 +334,7 @@ func TestPostInfo(t *testing.T) {
 		ID:       "ALERT1",
 		OpenedAt: 1000,
 	}
-	postInfo(alert, client, db, opts)
+	_ = postInfo(alert, client, db, opts)
 	v, _ := db.Get([]byte("1000"))
 	assert.Equal(t, "", string(v), "posted data should be removed")
 
@@ -360,12 +360,12 @@ func TestVacuumDB(t *testing.T) {
 	db, _ := pogreb.Open(opts.StateDir, nil)
 	defer db.Close()
 
-	writeInfo(db, 100000-60*60*6-1, opts) // 6h+1 ago
-	writeInfo(db, 100000-60*60*6, opts)   // 6h ago
-	writeInfo(db, 100000-60*60+1, opts)   // 6h-1 ago
-	writeInfo(db, 100000, opts)
+	_ = writeInfo(db, 100000-60*60*6-1, opts) // 6h+1 ago
+	_ = writeInfo(db, 100000-60*60*6, opts)   // 6h ago
+	_ = writeInfo(db, 100000-60*60+1, opts)   // 6h-1 ago
+	_ = writeInfo(db, 100000, opts)
 
-	vacuumDB(db, 100000, 60*6) // 6 h
+	_ = vacuumDB(db, 100000, 60*6) // 6 h
 
 	v, _ := db.Get([]byte("100000"))
 	assert.Equal(t, "Result 100000", string(v), "now time exists")
