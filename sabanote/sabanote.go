@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/akrylysov/pogreb"
@@ -24,16 +25,17 @@ type sabanoteOpts struct {
 	Monitors   []string `arg:"-m,--monitor,separate,required" help:"monitor ID (accept multiple)" placeholder:"MONITOR_ID"`
 	Service    string   `arg:"-s,--service,required" help:"target service" placeholder:"SERVICE"`
 	Roles      []string `arg:"-r,--role,required" help:"target role (accept multiple)" placeholder:"ROLE"`
-	Title      string   `arg:"--title" help:"annotation title (default: 'Host HOST_ID')" placeholder:"TITLE"`
+	Title      string   `arg:"--title" help:"annotation title (default: 'Host <HOST> status when <ALERT> is alerted (<TIME>)')" placeholder:"TITLE"`
 	MemorySort bool     `arg:"--mem" help:"sort by memory size (sort by CPU% by default)"`
 	Cmd        string   `arg:"-c,--cmd" help:"custom command path" placeholder:"CMD_PATH"`
 	StateDir   string   `arg:"--state" help:"state file folder" placeholder:"DIR"`
-	MinutesAgo int      `arg:"--since-minutes" help:"post the report from N minutes before the alert occured (0-5)" default:"3" placeholder:"MINUTES"`
+	Before     int      `arg:"--before" help:"post the report N times before the alert occured (0-5)" default:"3" placeholder:"MINUTES"`
+	After      int      `arg:"--after" help:"post the report N times after the alert occured (0-5)" default:"1" placeholder:"MINUTES"`
 	AlertFreq  int      `arg:"--alert-frequency" help:"how many minutes to check alerts every (0 (don't check alert), 2-30)" default:"5" placeholder:"MINUTES"`
 	Delay      int      `arg:"--delay" help:"delay seconds before running command (0-29)" default:"0" placeholder:"SECONDS"`
 	Force      bool     `arg:"--force" help:"force to write and post (for debug)"`
 	DryRun     bool     `arg:"--dry-run" help:"print an output instead of posting (for debug)"`
-	Verbose    bool     `arg:"--verbose" help:"print steps (for debug)"`
+	Verbose    bool     `arg:"--verbose" help:"print steps to stderr (for debug)"`
 }
 
 var version string
@@ -84,8 +86,12 @@ func parseArgs(args []string) (*sabanoteOpts, error) {
 		err = fmt.Errorf("the value of --alert-frequency must in the range 2 to 30, or 0")
 	}
 
-	if so.MinutesAgo < 0 || so.MinutesAgo > 5 {
-		err = fmt.Errorf("the value of --minutes must be in the range 0 to 5")
+	if so.Before < 0 || so.Before > 5 {
+		err = fmt.Errorf("the value of --before must be in the range 0 to 5")
+	}
+
+	if so.After < 0 || so.After > 5 {
+		err = fmt.Errorf("the value of --after must be in the range 0 to 5")
 	}
 
 	if so.Delay < 0 || so.Delay > 29 {
@@ -151,7 +157,7 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 		return checkers.Unknown(fmt.Sprintf("failed to create state folder: %v", err))
 	}
 	if opts.Verbose {
-		fmt.Printf("[info] state folder: %s\n", opts.StateDir)
+		fmt.Fprintf(os.Stderr, "[info] state folder: %s\n", opts.StateDir)
 	}
 
 	db, err := pogreb.Open(filepath.Join(opts.StateDir, "sabanote-db"), nil)
@@ -177,7 +183,7 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 
 	if opts.AlertFreq > 0 && lastCheckTime+int64(opts.AlertFreq*60) > now {
 		if opts.Verbose {
-			fmt.Println("[info] cleanup")
+			fmt.Fprintln(os.Stderr, "[info] cleanup")
 		}
 		err := vacuumDB(db, now, retentionMinutes)
 		if err != nil {
@@ -199,7 +205,7 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 		return checkers.Unknown(fmt.Sprintf("%v", err))
 	}
 	if opts.Verbose {
-		fmt.Printf("[info] connection status: %v, alerts size: %v\n", connection, len(alerts))
+		fmt.Fprintf(os.Stderr, "[info] connection status: %v, alerts size: %v\n", connection, len(alerts))
 	}
 
 	alert, err := matchAlert(db, connection, alerts, now, opts)
@@ -222,13 +228,13 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 }
 
 func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (bool, []*mackerel.Alert, error) {
-	const limit = 50 // XXX: takes max 50 alerts
+	const maxNumAlerts = 20 // XXX: takes max 20 alerts
 
-	resp, err := client.FindAlerts()
+	resp, err := client.FindWithClosedAlerts()
 	if err != nil {
 		if fmt.Sprintf("%T", err) == "*url.Error" { // FIXME: better check!
 			if opts.Verbose {
-				fmt.Printf("[info] url.Error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "[info] url.Error: %v\n", err)
 			}
 			return false, nil, nil // maybe connection problem, may be recovered
 		} else {
@@ -237,7 +243,7 @@ func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (bool, []*mackerel.A
 	}
 	if resp.NextID != "" {
 		for {
-			if limit <= len(resp.Alerts) {
+			if maxNumAlerts <= len(resp.Alerts) {
 				break
 			}
 			nextResp, err := client.FindAlertsByNextID(resp.NextID)
@@ -245,7 +251,7 @@ func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (bool, []*mackerel.A
 				return false, nil, err
 			}
 			if opts.Verbose {
-				fmt.Println("[info] getting next alert pages")
+				fmt.Fprintln(os.Stderr, "[info] getting next alert pages")
 			}
 			resp.Alerts = append(resp.Alerts, nextResp.Alerts...)
 			resp.NextID = nextResp.NextID
@@ -255,8 +261,8 @@ func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (bool, []*mackerel.A
 			time.Sleep(1 * time.Second)
 		}
 	}
-	if len(resp.Alerts) > limit {
-		resp.Alerts = resp.Alerts[:limit]
+	if len(resp.Alerts) > maxNumAlerts {
+		resp.Alerts = resp.Alerts[:maxNumAlerts]
 	}
 
 	return true, resp.Alerts, nil
@@ -265,19 +271,19 @@ func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (bool, []*mackerel.A
 func matchAlert(db *pogreb.DB, connection bool, alerts []*mackerel.Alert, now int64, opts *sabanoteOpts) (*mackerel.Alert, error) {
 	if connection && !opts.Force {
 		if opts.Verbose {
-			fmt.Println("[info] connection is alive")
+			fmt.Fprintln(os.Stderr, "[info] connection is alive")
 		}
 		for _, alert := range alerts {
 			for _, monitor := range opts.Monitors {
 				if alert.Type != "check" && monitor != alert.MonitorID { // XXX: check monitor has dynamic ID
 					if opts.Verbose {
-						fmt.Printf("[info] monitorID: %s != targetID: %s\n", alert.MonitorID, monitor)
+						fmt.Fprintf(os.Stderr, "[info] monitorID: %s != targetID: %s\n", alert.MonitorID, monitor)
 					}
 					continue
 				}
 				if alert.HostID == "" || alert.HostID == opts.Host {
 					if opts.Verbose {
-						fmt.Printf("[info] alert.HostID: %s, targetHost: %s\n", alert.HostID, opts.Host)
+						fmt.Fprintf(os.Stderr, "[info] alert.HostID: %s, targetHost: %s\n", alert.HostID, opts.Host)
 					}
 					err := writeInfo(db, now, opts)
 					if err != nil {
@@ -290,7 +296,7 @@ func matchAlert(db *pogreb.DB, connection bool, alerts []*mackerel.Alert, now in
 	} else {
 		// connection error. write info to DB
 		if opts.Verbose {
-			fmt.Println("[info] connection is dead (or --force is used)")
+			fmt.Fprintln(os.Stderr, "[info] connection is dead (or --force is used)")
 		}
 		err := writeInfo(db, now, opts)
 		if err != nil {
@@ -339,7 +345,7 @@ func writeInfo(db *pogreb.DB, now int64, opts *sabanoteOpts) error {
 
 func execCmd(verbose bool, name string, cmdargs ...string) ([]byte, error) {
 	if verbose {
-		fmt.Printf("[info] execute: %s %s\n", name, cmdargs)
+		fmt.Fprintf(os.Stderr, "[info] execute: %s %s\n", name, cmdargs)
 	}
 	cmd := exec.Command(name, cmdargs...)
 	out, err := cmd.Output()
@@ -353,24 +359,24 @@ func execCmd(verbose bool, name string, cmdargs ...string) ([]byte, error) {
 		return nil, fmt.Errorf("command returns nothing")
 	}
 	if verbose {
-		fmt.Printf("[info] output: %s\n", string(out))
+		fmt.Fprintf(os.Stderr, "[info] output: %s\n", string(out))
 	}
 	return out, nil
 }
 
 func getPSInfo_linux(opts *sabanoteOpts) ([]byte, error) {
 	if opts.MemorySort {
-		return execCmd(opts.Verbose, "/bin/sh", "-c", "ps axc o %cpu,%mem,time,command --sort -%mem | head -n 20")
+		return execCmd(opts.Verbose, "/bin/sh", "-c", "ps axc o %cpu,%mem,time,command --sort -%mem | head -n 21")
 	} else {
-		return execCmd(opts.Verbose, "/bin/sh", "-c", "ps axc o %cpu,%mem,time,command --sort -%cpu | head -n 20")
+		return execCmd(opts.Verbose, "/bin/sh", "-c", "ps axc o %cpu,%mem,time,command --sort -%cpu | head -n 21")
 	}
 }
 
 func getPSInfo_darwin(opts *sabanoteOpts) ([]byte, error) {
 	if opts.MemorySort {
-		return execCmd(opts.Verbose, "/bin/sh", "-c", "ps axc -o %cpu,%mem,time,command -m | head -n 20")
+		return execCmd(opts.Verbose, "/bin/sh", "-c", "ps axc -o %cpu,%mem,time,command -m | head -n 21")
 	} else {
-		return execCmd(opts.Verbose, "/bin/sh", "-c", "ps axc -o %cpu,%mem,time,command -r | head -n 20")
+		return execCmd(opts.Verbose, "/bin/sh", "-c", "ps axc -o %cpu,%mem,time,command -r | head -n 21")
 	}
 }
 
@@ -383,13 +389,14 @@ func getPSInfo_windows(opts *sabanoteOpts) ([]byte, error) {
 }
 
 func postInfo(alert *mackerel.Alert, client *mackerel.Client, db *pogreb.DB, opts *sabanoteOpts) error {
-	countLimit := 10 + 1            // max posts per once running (+1 means alertCheckedTime skip (XXX: should be replaced the implementation))
+	countLimit := 10                // max posts per once running
 	annotationDuration := int64(30) // set annotation endtime to time + 30 seconds
 
 	it := db.Items()
-	for i := 0; i < countLimit; i++ {
+	postCount := 0
+	for {
 		k, val, err := it.Next()
-		if err == pogreb.ErrIterationDone {
+		if err == pogreb.ErrIterationDone || postCount > countLimit {
 			break
 		}
 		if err != nil {
@@ -401,37 +408,43 @@ func postInfo(alert *mackerel.Alert, client *mackerel.Client, db *pogreb.DB, opt
 			continue
 		}
 
-		if i > 0 {
-			time.Sleep(1 * time.Second)
-		}
-
-		title := opts.Title
-		if opts.Title == "" {
-			title = fmt.Sprintf("Host %s", opts.Host)
-		}
-
 		keyTime, _ := strconv.ParseInt(key, 10, 64)
 		alertTime := alert.OpenedAt
 
-		if keyTime > alertTime-int64(opts.MinutesAgo*60) && keyTime <= alertTime {
-			annotation := &mackerel.GraphAnnotation{
-				Title:       title,
-				Description: string(val),
-				From:        keyTime,
-				To:          keyTime + annotationDuration,
-				Service:     opts.Service,
-				Roles:       opts.Roles,
+		if keyTime < alertTime-int64(opts.Before*60) || keyTime > alertTime+int64(opts.After*60) {
+			continue
+		}
+
+		if postCount > 0 {
+			time.Sleep(1 * time.Second)
+		}
+		postCount++
+
+		title := opts.Title
+		if opts.Title == "" {
+			title = "Host <HOST> status when <ALERT> is alerted (<TIME>)"
+		}
+		title = strings.Replace(title, "<HOST>", opts.Host, -1)
+		title = strings.Replace(title, "<ALERT>", alert.ID, -1)
+		title = strings.Replace(title, "<TIME>", fmt.Sprintf("%v", time.Unix(alert.OpenedAt, 0)), -1)
+
+		annotation := &mackerel.GraphAnnotation{
+			Title:       title,
+			Description: string(val),
+			From:        keyTime,
+			To:          keyTime + annotationDuration,
+			Service:     opts.Service,
+			Roles:       opts.Roles,
+		}
+		if opts.DryRun {
+			_ = format.PrettyPrintJSON(os.Stdout, annotation, "")
+		} else {
+			_, err := client.CreateGraphAnnotation(annotation)
+			if err != nil {
+				return err
 			}
-			if opts.DryRun {
-				_ = format.PrettyPrintJSON(os.Stdout, annotation, "")
-			} else {
-				_, err := client.CreateGraphAnnotation(annotation)
-				if err != nil {
-					return err
-				}
-				if opts.Verbose {
-					fmt.Printf("[info] annotation: %v\n", annotation)
-				}
+			if opts.Verbose {
+				fmt.Fprintf(os.Stderr, "[info] annotation: %v\n", annotation)
 			}
 		}
 		// XXX: for future RDB, better to use "posted" flag
@@ -440,10 +453,9 @@ func postInfo(alert *mackerel.Alert, client *mackerel.Client, db *pogreb.DB, opt
 			return err
 		}
 		if opts.Verbose {
-			fmt.Printf("[info] deleted entry: %s\n", key)
+			fmt.Fprintf(os.Stderr, "[info] deleted entry: %s\n", key)
 		}
 	}
-
 	return nil
 }
 
