@@ -16,7 +16,6 @@ import (
 	"github.com/mackerelio/golib/pluginutil"
 	"github.com/mackerelio/mackerel-agent/config"
 	"github.com/mackerelio/mackerel-client-go"
-	"github.com/mackerelio/mkr/format"
 )
 
 // XXX: better option name and description
@@ -25,7 +24,7 @@ type sabanoteOpts struct {
 	Monitors   []string `arg:"-m,--monitor,separate,required" help:"monitor ID (accept multiple)" placeholder:"MONITOR_ID"`
 	Service    string   `arg:"-s,--service,required" help:"target service" placeholder:"SERVICE"`
 	Roles      []string `arg:"-r,--role,separate,required" help:"target role (accept multiple)" placeholder:"ROLE"`
-	Title      string   `arg:"--title" help:"annotation title (default: 'Host <HOST> status when <ALERT> is alerted (<TIME>)')" placeholder:"TITLE"`
+	Title      string   `arg:"--title" help:"annotation title" default:"Host <HOST> status when <ALERT> is alerted (<TIME>)" placeholder:"TITLE"`
 	MemorySort bool     `arg:"--mem" help:"sort by memory size (sort by CPU% by default)"`
 	Cmd        string   `arg:"-c,--cmd" help:"custom command path" placeholder:"CMD_PATH"`
 	StateDir   string   `arg:"--state" help:"state file folder" placeholder:"DIR"`
@@ -33,9 +32,8 @@ type sabanoteOpts struct {
 	After      int      `arg:"--after" help:"post the report N times after the alert occured (0-5)" default:"1" placeholder:"MINUTES"`
 	AlertFreq  int      `arg:"--alert-frequency" help:"how many minutes to check alerts every (0 (don't check alert), 2-30)" default:"5" placeholder:"MINUTES"`
 	Delay      int      `arg:"--delay" help:"delay seconds before running command (0-29)" default:"0" placeholder:"SECONDS"`
-	DryRun     bool     `arg:"--dry-run" help:"print an output instead of posting (for debug)"`
 	Verbose    bool     `arg:"--verbose" help:"print steps to stderr (for debug)"`
-	Test       bool
+	Test       bool     `arg:"-"`
 }
 
 var version string
@@ -415,9 +413,6 @@ func postInfo(alert *mackerel.Alert, client *mackerel.Client, db *pogreb.DB, opt
 		postCount++
 
 		title := opts.Title
-		if opts.Title == "" {
-			title = "Host <HOST> status when <ALERT> is alerted (<TIME>)"
-		}
 		title = strings.Replace(title, "<HOST>", opts.Host, -1)
 		title = strings.Replace(title, "<ALERT>", alert.ID, -1)
 		title = strings.Replace(title, "<TIME>", fmt.Sprintf("%v", time.Unix(alert.OpenedAt, 0)), -1)
@@ -430,16 +425,12 @@ func postInfo(alert *mackerel.Alert, client *mackerel.Client, db *pogreb.DB, opt
 			Service:     opts.Service,
 			Roles:       opts.Roles,
 		}
-		if opts.DryRun {
-			_ = format.PrettyPrintJSON(os.Stdout, annotation, "")
-		} else {
-			_, err := client.CreateGraphAnnotation(annotation)
-			if err != nil {
-				return err
-			}
-			if opts.Verbose {
-				fmt.Fprintf(os.Stderr, "[info] annotation: %v\n", annotation)
-			}
+		_, err = client.CreateGraphAnnotation(annotation)
+		if err != nil {
+			return err
+		}
+		if opts.Verbose {
+			fmt.Fprintf(os.Stderr, "[info] annotation: %v\n", annotation)
 		}
 		// XXX: for future RDB, better to use "posted" flag
 		err = db.Delete(k)
