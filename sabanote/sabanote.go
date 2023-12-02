@@ -30,7 +30,7 @@ type sabanoteOpts struct {
 	StateDir   string   `arg:"--state" help:"state file folder" placeholder:"DIR"`
 	Before     int      `arg:"--before" help:"post the report N times before the alert occured (0-5)" default:"3" placeholder:"MINUTES"`
 	After      int      `arg:"--after" help:"post the report N times after the alert occured (0-5)" default:"1" placeholder:"MINUTES"`
-	AlertFreq  int      `arg:"--alert-frequency" help:"how many minutes to check alerts every (0 (don't check alert), 2-30)" default:"5" placeholder:"MINUTES"`
+	AlertFreq  int      `arg:"--alert-frequency" help:"interval for querying the presence of alerts (0 (don't check an alert), 2-30)" default:"5" placeholder:"MINUTES"`
 	Delay      int      `arg:"--delay" help:"delay seconds before running command (0-29)" default:"0" placeholder:"SECONDS"`
 	Verbose    bool     `arg:"--verbose" help:"print steps to stderr (for debug)"`
 	Test       bool     `arg:"-"`
