@@ -185,7 +185,10 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 		}
 		return checkers.Ok("running")
 	} else {
-		db.Put([]byte("alertCheckedTime"), []byte(strconv.FormatInt(now, 10)))
+		err := db.Put([]byte("alertCheckedTime"), []byte(strconv.FormatInt(now, 10)))
+		if err != nil {
+			return checkers.Unknown(fmt.Sprintf("%v", err))
+		}
 	}
 	if opts.AlertFreq == 0 {
 		return checkers.Ok("running (recording only mode)")
@@ -462,7 +465,10 @@ func vacuumDB(db *pogreb.DB, now int64, retentionMinutes int) error {
 		}
 		time, _ := strconv.ParseInt(key, 10, 64)
 		if now > time+int64(retentionMinutes*60) {
-			db.Delete(k)
+			err := db.Delete(k)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
