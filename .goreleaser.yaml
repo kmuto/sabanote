@@ -8,6 +8,8 @@ builds:
   - env:
       - CGO_ENABLED=0
       - PACKAGE_PATH=github.com/kmuto/sabanote/sabanote
+    main: ./cmd/check-sabanote/main.go
+    binary: check-sabanote
     goos:
       - linux
       - windows
