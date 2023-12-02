@@ -22,7 +22,7 @@ func TestParseArgs(t *testing.T) {
 	assert.Equal(t, "SERVICE", opts.Service, "service is passed correctly")
 	assert.Equal(t, "ROLE", opts.Roles[0], "role is passed correctly")
 
-	opts, _ = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE -H HOST --title TITLE --mem --state DIR --before 5 --after 4 --alert-frequency 2 --delay 29 --dry-run --verbose", " "))
+	opts, _ = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE -H HOST --title TITLE --mem --state DIR --before 5 --after 4 --alert-frequency 2 --delay 29 --verbose", " "))
 	assert.Equal(t, "HOST", opts.Host, "host is passed correctly")
 	assert.Equal(t, "TITLE", opts.Title, "title is passed correctly")
 	assert.Equal(t, true, opts.MemorySort, "mem is passed correctly")
@@ -31,7 +31,6 @@ func TestParseArgs(t *testing.T) {
 	assert.Equal(t, 4, opts.After, "after is passed correctly")
 	assert.Equal(t, 2, opts.AlertFreq, "alert-frequency is passed correctly")
 	assert.Equal(t, 29, opts.Delay, "delay is passed correctly")
-	assert.Equal(t, true, opts.DryRun, "dry-run is passed correctly")
 	assert.Equal(t, true, opts.Verbose, "verbose is passed correctly")
 
 	opts, _ = parseArgs(strings.Split("-m MONITOR1 -r ROLE1 -s SERVICE -r ROLE2 -r ROLE3 -m MONITOR2", " "))
