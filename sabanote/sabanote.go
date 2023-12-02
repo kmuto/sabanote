@@ -18,6 +18,7 @@ import (
 	"github.com/mackerelio/mkr/format"
 )
 
+// XXX: better option name and description
 type sabanoteOpts struct {
 	Host       string   `arg:"-H,--host" help:"host ID" placeholder:"HOST_ID"`
 	Monitors   []string `arg:"-m,--monitor,separate,required" help:"monitor ID (accept multiple)" placeholder:"MONITOR_ID"`
@@ -27,7 +28,9 @@ type sabanoteOpts struct {
 	MemorySort bool     `arg:"--mem" help:"sort by memory size (sort by CPU% by default)"`
 	Cmd        string   `arg:"-c,--cmd" help:"custom command path" placeholder:"CMD_PATH"`
 	StateDir   string   `arg:"--state" help:"state file folder" placeholder:"DIR"`
-	Delay      int      `arg:"--delay" help:"delay seconds before running command (0-29)" placeholder:"SECONDS"`
+	MinutesAgo int      `arg:"--since-minutes" help:"post the report from N minutes before the alert occured (0-5)" default:"3" placeholder:"MINUTES"`
+	AlertFreq  int      `arg:"--alert-frequency" help:"how many minutes to check alerts every (0 (don't check alert), 2-30)" default:"5" placeholder:"MINUTES"`
+	Delay      int      `arg:"--delay" help:"delay seconds before running command (0-29)" default:"0" placeholder:"SECONDS"`
 	Force      bool     `arg:"--force" help:"force to write and post (for debug)"`
 	DryRun     bool     `arg:"--dry-run" help:"print an output instead of posting (for debug)"`
 	Verbose    bool     `arg:"--verbose" help:"print steps (for debug)"`
@@ -75,6 +78,14 @@ func parseArgs(args []string) (*sabanoteOpts, error) {
 
 	if so.Cmd != "" && !fileExists(so.Cmd) {
 		err = fmt.Errorf("not found %s", so.Cmd)
+	}
+
+	if so.AlertFreq != 0 && (so.AlertFreq < 2 || so.AlertFreq > 30) {
+		err = fmt.Errorf("the value of --alert-frequency must in the range 2 to 30, or 0")
+	}
+
+	if so.MinutesAgo < 0 || so.MinutesAgo > 5 {
+		err = fmt.Errorf("the value of --minutes must be in the range 0 to 5")
 	}
 
 	if so.Delay < 0 || so.Delay > 29 {
@@ -132,6 +143,9 @@ func (opts *sabanoteOpts) run() *checkers.Checker {
 }
 
 func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker { // XXX: better name
+	const retentionMinutes = 60 * 6 // keep 6 hours
+	now := time.Now().Unix()
+
 	err := os.MkdirAll(opts.StateDir, 0755)
 	if err != nil {
 		return checkers.Unknown(fmt.Sprintf("failed to create state folder: %v", err))
@@ -147,26 +161,58 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 	}
 	defer db.Close()
 
+	// writing process info per call
+	err = writeInfo(db, now, opts)
+	if err != nil {
+		return checkers.Unknown(fmt.Sprintf("%v", err))
+	}
+
+	// check alert based on alert requency XXX:future RDB: use metainfo table
+	lastCheckedByte, err := db.Get([]byte("alertCheckedTime"))
+	if err != nil {
+		return checkers.Unknown(fmt.Sprintf("%v", lastCheckedByte))
+	}
+
+	lastCheckTime, _ := strconv.ParseInt(string(lastCheckedByte), 10, 64)
+
+	if opts.AlertFreq > 0 && lastCheckTime+int64(opts.AlertFreq*60) > now {
+		if opts.Verbose {
+			fmt.Println("[info] cleanup")
+		}
+		err := vacuumDB(db, now, retentionMinutes)
+		if err != nil {
+			return checkers.Unknown(fmt.Sprintf("%v", err))
+		}
+		return checkers.Ok("running")
+	} else {
+		db.Put([]byte("alertCheckedTime"), []byte(strconv.FormatInt(now, 10)))
+	}
+	if opts.AlertFreq == 0 {
+		return checkers.Ok("running (recording only mode)")
+	}
+
 	connection, alerts, err := getAlerts(client, opts)
 	if err != nil {
 		return checkers.Unknown(fmt.Sprintf("%v", err))
 	}
 	if opts.Verbose {
-		fmt.Printf("[info] connection status: %v, alerts: %v\n", connection, alerts)
+		fmt.Printf("[info] connection status: %v, alerts size: %v\n", connection, len(alerts))
 	}
 
-	err = matchAlert(db, connection, alerts, opts)
+	alert, err := matchAlert(db, connection, alerts, now, opts)
 	if err != nil {
 		return checkers.Unknown(fmt.Sprintf("%v", err))
 	}
 
-	if connection {
-		err = postInfo(client, db, opts)
-		if err != nil {
-			return checkers.Ok(fmt.Sprintf("post failure: %v", err))
+	if alert != nil {
+		if connection {
+			err = postInfo(alert, client, db, opts)
+			if err != nil {
+				return checkers.Ok(fmt.Sprintf("post failure: %v", err))
+			}
+		} else {
+			return checkers.Ok("connection failure")
 		}
-	} else {
-		return checkers.Ok("connection failure")
 	}
 
 	return checkers.Ok("running")
@@ -213,7 +259,7 @@ func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (bool, []*mackerel.A
 	return true, resp.Alerts, nil
 }
 
-func matchAlert(db *pogreb.DB, connection bool, alerts []*mackerel.Alert, opts *sabanoteOpts) error {
+func matchAlert(db *pogreb.DB, connection bool, alerts []*mackerel.Alert, now int64, opts *sabanoteOpts) (*mackerel.Alert, error) {
 	if connection && !opts.Force {
 		if opts.Verbose {
 			fmt.Println("[info] connection is alive")
@@ -230,11 +276,11 @@ func matchAlert(db *pogreb.DB, connection bool, alerts []*mackerel.Alert, opts *
 					if opts.Verbose {
 						fmt.Printf("[info] alert.HostID: %s, targetHost: %s\n", alert.HostID, opts.Host)
 					}
-					err := writeInfo(db, opts)
+					err := writeInfo(db, now, opts)
 					if err != nil {
-						return err
+						return nil, err
 					}
-					return nil // XXX: avoid duplicate posting
+					return alert, nil // XXX: avoid duplicate posting
 				}
 			}
 		}
@@ -243,17 +289,16 @@ func matchAlert(db *pogreb.DB, connection bool, alerts []*mackerel.Alert, opts *
 		if opts.Verbose {
 			fmt.Println("[info] connection is dead (or --force is used)")
 		}
-		err := writeInfo(db, opts)
+		err := writeInfo(db, now, opts)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return nil, nil
 }
 
-func writeInfo(db *pogreb.DB, opts *sabanoteOpts) error {
+func writeInfo(db *pogreb.DB, now int64, opts *sabanoteOpts) error {
 	// write
-	now := time.Now().Unix()
 	var out []byte
 	var err error
 
@@ -334,22 +379,25 @@ func getPSInfo_windows(opts *sabanoteOpts) ([]byte, error) {
 	}
 }
 
-func postInfo(client *mackerel.Client, db *pogreb.DB, opts *sabanoteOpts) error {
-	countLimit := 10                // max posts per once running
-	postLimit := int64(48 * 24)     // drop posts if it overs 48 hours ago
-	annotationDuration := int64(30) // set annotation endtime to now + 30 seconds
-
-	now := time.Now().Unix()
+func postInfo(alert *mackerel.Alert, client *mackerel.Client, db *pogreb.DB, opts *sabanoteOpts) error {
+	countLimit := 10 + 1            // max posts per once running (+1 means alertCheckedTime skip (XXX: should be replaced the implementation))
+	annotationDuration := int64(30) // set annotation endtime to time + 30 seconds
 
 	it := db.Items()
 	for i := 0; i < countLimit; i++ {
-		key, val, err := it.Next()
+		k, val, err := it.Next()
 		if err == pogreb.ErrIterationDone {
 			break
 		}
 		if err != nil {
 			return err
 		}
+
+		key := string(k)
+		if key == "alertCheckedTime" {
+			continue
+		}
+
 		if i > 0 {
 			time.Sleep(1 * time.Second)
 		}
@@ -358,9 +406,11 @@ func postInfo(client *mackerel.Client, db *pogreb.DB, opts *sabanoteOpts) error 
 		if opts.Title == "" {
 			title = fmt.Sprintf("Host %s", opts.Host)
 		}
-		keyTime, _ := strconv.ParseInt(string(key), 10, 64)
 
-		if keyTime <= now && keyTime > now-postLimit {
+		keyTime, _ := strconv.ParseInt(key, 10, 64)
+		alertTime := alert.OpenedAt
+
+		if keyTime > alertTime-int64(opts.MinutesAgo*60) && keyTime <= alertTime {
 			annotation := &mackerel.GraphAnnotation{
 				Title:       title,
 				Description: string(val),
@@ -381,12 +431,38 @@ func postInfo(client *mackerel.Client, db *pogreb.DB, opts *sabanoteOpts) error 
 				}
 			}
 		}
-		err = db.Delete([]byte(key))
+		// XXX: for future RDB, better to use "posted" flag
+		err = db.Delete(k)
 		if err != nil {
 			return err
 		}
 		if opts.Verbose {
-			fmt.Printf("[info] deleted entry: %s\n", string(key))
+			fmt.Printf("[info] deleted entry: %s\n", key)
+		}
+	}
+
+	return nil
+}
+
+func vacuumDB(db *pogreb.DB, now int64, retentionMinutes int) error {
+	// XXX: I know, this should use RDB, not KV
+	it := db.Items()
+	for {
+		k, _, err := it.Next()
+		if err == pogreb.ErrIterationDone {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		key := string(k)
+		if key == "alertCheckedTime" {
+			continue
+		}
+		time, _ := strconv.ParseInt(key, 10, 64)
+		if now > time+int64(retentionMinutes*60) {
+			db.Delete(k)
 		}
 	}
 
