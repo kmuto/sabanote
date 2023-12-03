@@ -3,6 +3,7 @@ package sabanote
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -282,12 +283,13 @@ func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (bool, []*mackerel.A
 
 	resp, err := client.FindWithClosedAlerts()
 	if err != nil {
-		if fmt.Sprintf("%T", err) == "*url.Error" { // FIXME: should be replaced with reflection?
+		switch err.(type) {
+		case *url.Error:
 			if opts.Verbose {
 				fmt.Fprintf(os.Stderr, "[info] url.Error: %v\n", err)
 			}
 			return false, nil, nil // maybe connection problem, may be recovered
-		} else {
+		default:
 			return false, nil, err // *mackerel.APIError and something
 		}
 	}
