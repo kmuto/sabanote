@@ -20,10 +20,10 @@ import (
 
 // XXX: better option name and description
 type sabanoteOpts struct {
-	Host       string   `arg:"-H,--host" help:"host ID" placeholder:"HOST_ID"`
 	Monitors   []string `arg:"-m,--monitor,separate,required" help:"monitor ID (accept multiple)" placeholder:"MONITOR_ID"`
 	Service    string   `arg:"-s,--service,required" help:"target service" placeholder:"SERVICE"`
 	Roles      []string `arg:"-r,--role,separate,required" help:"target role (accept multiple)" placeholder:"ROLE"`
+	Host       string   `arg:"-H,--host" help:"host ID" placeholder:"HOST_ID"`
 	Title      string   `arg:"--title" help:"annotation title" default:"Host <HOST> status when <ALERT> is alerted (<TIME>)" placeholder:"TITLE"`
 	MemorySort bool     `arg:"--mem" help:"sort by memory size (sort by CPU% by default)"`
 	Cmd        string   `arg:"-c,--cmd" help:"custom command path" placeholder:"CMD_PATH"`
