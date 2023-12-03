@@ -1,6 +1,7 @@
 package sabanote
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,7 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/akrylysov/pogreb"
+	_ "modernc.org/sqlite"
+
 	"github.com/alexflint/go-arg"
 	"github.com/mackerelio/checkers"
 	"github.com/mackerelio/golib/pluginutil"
@@ -146,6 +148,55 @@ func (opts *sabanoteOpts) run() *checkers.Checker {
 	return handleInfo(client, opts)
 }
 
+func findLastAlertCheckedTime(db *sql.DB) (int64, error) {
+	rows, err := db.Query("SELECT value FROM metainfo WHERE key = 'lastAlertChecked' LIMIT 1")
+	var t int64
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+		var s string
+		err = rows.Scan(&s)
+		if err != nil {
+			return 0, err
+		}
+		t, _ = strconv.ParseInt(s, 10, 64)
+	}
+	return t, nil
+}
+
+func updateLastAlertCheckedTime(db *sql.DB, now int64) error {
+	_, err := db.Exec("INSERT OR REPLACE INTO metainfo VALUES ($1, $2)", "lastAlertChecked", now)
+	return err
+}
+
+func findReport(db *sql.DB, time int64) (string, bool, error) {
+	rows, err := db.Query("SELECT report, posted FROM reports WHERE time = $1", time)
+	if err != nil {
+		return "", false, err
+	}
+
+	var report string
+	var posted int
+	for rows.Next() {
+		err = rows.Scan(&report, &posted)
+		if err != nil {
+			return "", false, err
+		}
+	}
+	postedBool := false
+	if posted == 1 {
+		postedBool = true
+	}
+	return report, postedBool, nil
+}
+
+func createTable(db *sql.DB) error {
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS reports(time INTEGER PRIMARY KEY NOT NULL, report TEXT NOT NULL, posted INTEGER DEFAULT 0);
+		CREATE TABLE IF NOT EXISTS metainfo(key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)`)
+	return err
+}
+
 func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker { // XXX: better name
 	const retentionMinutes = 60 * 6 // keep 6 hours
 	now := time.Now().Unix()
@@ -158,26 +209,27 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 		fmt.Fprintf(os.Stderr, "[info] state folder: %s\n", opts.StateDir)
 	}
 
-	db, err := pogreb.Open(filepath.Join(opts.StateDir, "sabanote-db"), nil)
+	db, err := sql.Open("sqlite", filepath.Join(opts.StateDir, "sabanote.db"))
 
 	if err != nil {
-		return checkers.Unknown(fmt.Sprintf("failed to create sabanote-db: %v", err))
+		return checkers.Unknown(fmt.Sprintf("failed to create sabanote.db: %v", err))
 	}
 	defer db.Close()
 
-	// writing process info per call
+	err = createTable(db)
+	if err != nil {
+		return checkers.Unknown(fmt.Sprintf("%v", err))
+	}
+
 	err = writeInfo(db, now, opts)
 	if err != nil {
 		return checkers.Unknown(fmt.Sprintf("%v", err))
 	}
 
-	// check alert based on alert requency XXX:future RDB: use metainfo table
-	lastCheckedByte, err := db.Get([]byte("alertCheckedTime"))
+	lastCheckTime, err := findLastAlertCheckedTime(db)
 	if err != nil {
-		return checkers.Unknown(fmt.Sprintf("%v", lastCheckedByte))
+		return checkers.Unknown(fmt.Sprintf("%v", err))
 	}
-
-	lastCheckTime, _ := strconv.ParseInt(string(lastCheckedByte), 10, 64)
 
 	if opts.AlertFreq > 0 && lastCheckTime+int64(opts.AlertFreq*60) > now {
 		if opts.Verbose {
@@ -189,7 +241,7 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 		}
 		return checkers.Ok("running")
 	} else {
-		err := db.Put([]byte("alertCheckedTime"), []byte(strconv.FormatInt(now, 10)))
+		err := updateLastAlertCheckedTime(db, now)
 		if err != nil {
 			return checkers.Unknown(fmt.Sprintf("%v", err))
 		}
@@ -230,7 +282,7 @@ func getAlerts(client *mackerel.Client, opts *sabanoteOpts) (bool, []*mackerel.A
 
 	resp, err := client.FindWithClosedAlerts()
 	if err != nil {
-		if fmt.Sprintf("%T", err) == "*url.Error" { // FIXME: better check!
+		if fmt.Sprintf("%T", err) == "*url.Error" { // FIXME: should be replaced with reflection?
 			if opts.Verbose {
 				fmt.Fprintf(os.Stderr, "[info] url.Error: %v\n", err)
 			}
@@ -294,7 +346,7 @@ func matchAlert(connection bool, alerts []*mackerel.Alert, opts *sabanoteOpts) (
 	return nil, nil
 }
 
-func writeInfo(db *pogreb.DB, now int64, opts *sabanoteOpts) error {
+func writeInfo(db *sql.DB, now int64, opts *sabanoteOpts) error {
 	// write
 	var out []byte
 	var err error
@@ -328,7 +380,7 @@ func writeInfo(db *pogreb.DB, now int64, opts *sabanoteOpts) error {
 		return err
 	}
 
-	err = db.Put([]byte(strconv.FormatInt(now, 10)), out)
+	_, err = db.Exec("INSERT OR REPLACE INTO reports(time, report) VALUES ($1, $2)", now, string(out))
 	if err != nil {
 		return err
 	}
@@ -380,51 +432,66 @@ func getPSInfo_windows(opts *sabanoteOpts) ([]byte, error) {
 	}
 }
 
-func postInfo(alert *mackerel.Alert, client *mackerel.Client, db *pogreb.DB, opts *sabanoteOpts) error {
+func replaceTitle(title string, alert *mackerel.Alert, opts *sabanoteOpts) string {
+	title = strings.Replace(title, "<HOST>", opts.Host, -1)
+	title = strings.Replace(title, "<ALERT>", alert.ID, -1)
+	title = strings.Replace(title, "<TIME>", fmt.Sprintf("%v", time.Unix(alert.OpenedAt, 0)), -1)
+	return title
+}
+
+func postInfo(alert *mackerel.Alert, client *mackerel.Client, db *sql.DB, opts *sabanoteOpts) error {
 	countLimit := 10                // max posts per once running
 	annotationDuration := int64(30) // set annotation endtime to time + 30 seconds
 
-	it := db.Items()
+	rows, err := db.Query("SELECT time, report FROM reports WHERE posted = 0 ORDER BY time")
+	if err != nil {
+		return err
+	}
+
 	postCount := 0
-	for {
-		k, val, err := it.Next()
-		if err == pogreb.ErrIterationDone || postCount > countLimit {
-			break
-		}
+	alertTime := alert.OpenedAt
+
+	type report struct {
+		Time   int64
+		Report string
+	}
+
+	var reports []report
+
+	for rows.Next() {
+		r := &report{}
+		err := rows.Scan(&r.Time, &r.Report)
 		if err != nil {
 			return err
 		}
 
-		key := string(k)
-		if key == "alertCheckedTime" {
+		if r.Time < alertTime-int64(opts.Before*60) || r.Time > alertTime+int64(opts.After*60) {
 			continue
 		}
 
-		keyTime, _ := strconv.ParseInt(key, 10, 64)
-		alertTime := alert.OpenedAt
-
-		if keyTime < alertTime-int64(opts.Before*60) || keyTime > alertTime+int64(opts.After*60) {
-			continue
+		postCount++
+		if postCount == countLimit {
+			break
 		}
+		reports = append(reports, *r)
+	}
 
-		if postCount > 0 && !opts.Test {
+	for i, r := range reports {
+		if i > 0 && !opts.Test {
 			time.Sleep(1 * time.Second)
 		}
-		postCount++
 
-		title := opts.Title
-		title = strings.Replace(title, "<HOST>", opts.Host, -1)
-		title = strings.Replace(title, "<ALERT>", alert.ID, -1)
-		title = strings.Replace(title, "<TIME>", fmt.Sprintf("%v", time.Unix(alert.OpenedAt, 0)), -1)
+		title := replaceTitle(opts.Title, alert, opts)
 
 		annotation := &mackerel.GraphAnnotation{
 			Title:       title,
-			Description: string(val),
-			From:        keyTime,
-			To:          keyTime + annotationDuration,
+			Description: r.Report,
+			From:        r.Time,
+			To:          r.Time + annotationDuration,
 			Service:     opts.Service,
 			Roles:       opts.Roles,
 		}
+
 		_, err = client.CreateGraphAnnotation(annotation)
 		if err != nil {
 			return err
@@ -432,41 +499,20 @@ func postInfo(alert *mackerel.Alert, client *mackerel.Client, db *pogreb.DB, opt
 		if opts.Verbose {
 			fmt.Fprintf(os.Stderr, "[info] annotation: %v\n", annotation)
 		}
-		// XXX: for future RDB, better to use "posted" flag
-		err = db.Delete(k)
+
+		_, err := db.Exec("UPDATE reports SET posted=1 WHERE time = $1", r.Time)
 		if err != nil {
 			return err
 		}
-		if opts.Verbose {
-			fmt.Fprintf(os.Stderr, "[info] deleted entry: %s\n", key)
-		}
 	}
+
 	return nil
 }
 
-func vacuumDB(db *pogreb.DB, now int64, retentionMinutes int) error {
-	// XXX: I know, this should use RDB, not KV
-	it := db.Items()
-	for {
-		k, _, err := it.Next()
-		if err == pogreb.ErrIterationDone {
-			break
-		}
-		if err != nil {
-			return err
-		}
-
-		key := string(k)
-		if key == "alertCheckedTime" {
-			continue
-		}
-		time, _ := strconv.ParseInt(key, 10, 64)
-		if now > time+int64(retentionMinutes*60) {
-			err := db.Delete(k)
-			if err != nil {
-				return err
-			}
-		}
+func vacuumDB(db *sql.DB, now int64, retentionMinutes int) error {
+	_, err := db.Exec("DELETE FROM reports WHERE time < $1", now-int64(retentionMinutes*60))
+	if err != nil {
+		return err
 	}
 
 	return nil

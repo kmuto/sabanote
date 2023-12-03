@@ -1,16 +1,19 @@
 package sabanote
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/akrylysov/pogreb"
 	"github.com/mackerelio/mackerel-client-go"
 	"github.com/stretchr/testify/assert"
 )
@@ -286,14 +289,15 @@ func TestWriteInfo(t *testing.T) {
 		Test:     true,
 	}
 
-	db, _ := pogreb.Open(opts.StateDir, nil)
+	db, _ := sql.Open("sqlite", filepath.Join(opts.StateDir, "sabanote.db"))
 	defer db.Close()
+	_ = createTable(db)
 
 	_ = writeInfo(db, 1000, opts)
-	v, _ := db.Get([]byte("1000"))
-	assert.Equal(t, "Result 1000", string(v), "string is written")
-	v, _ = db.Get([]byte("0"))
-	assert.Equal(t, "", string(v), "empty is returned for invalid key")
+	v, _, _ := findReport(db, 1000)
+	assert.Equal(t, "Result 1000", v, "string is written")
+	v, _, _ = findReport(db, 0)
+	assert.Equal(t, "", v, "empty is returned for invalid key")
 }
 
 func TestPostInfo(t *testing.T) {
@@ -313,8 +317,9 @@ func TestPostInfo(t *testing.T) {
 		Roles:    []string{"ROLE1"},
 	}
 
-	db, _ := pogreb.Open(opts.StateDir, nil)
+	db, _ := sql.Open("sqlite", filepath.Join(opts.StateDir, "sabanote.db"))
 	defer db.Close()
+	_ = createTable(db)
 
 	_ = writeInfo(db, 1000-60*4, opts)
 	_ = writeInfo(db, 1000-60*3, opts)
@@ -333,9 +338,12 @@ func TestPostInfo(t *testing.T) {
 		ID:       "ALERT1",
 		OpenedAt: 1000,
 	}
-	_ = postInfo(alert, client, db, opts)
-	v, _ := db.Get([]byte("1000"))
-	assert.Equal(t, "", string(v), "posted data should be removed")
+	_, p, _ := findReport(db, 1000)
+	assert.Equal(t, false, p, "not posted yet")
+	err := postInfo(alert, client, db, opts)
+	assert.Equal(t, nil, err, "post is succeeded")
+	_, p, _ = findReport(db, 1000)
+	assert.Equal(t, true, p, "posted")
 
 	annotations, _ := client.FindGraphAnnotations("SERVICE", 0, 99999)
 	assert.Equal(t, 6, len(annotations), "before 3 + alert time + after 2 = 6")
@@ -345,6 +353,15 @@ func TestPostInfo(t *testing.T) {
 	assert.Equal(t, int64(1000-60*0), annotations[3].From, "alert min")
 	assert.Equal(t, int64(1000+60*1), annotations[4].From, "alert + 1min")
 	assert.Equal(t, int64(1000+60*2), annotations[5].From, "alert + 2min")
+
+	_, p, _ = findReport(db, int64(1000-60*4))
+	assert.Equal(t, false, p, "alet - 4min not posted")
+	_, p, _ = findReport(db, int64(1000-60*3))
+	assert.Equal(t, true, p, "alert - 3min posted")
+	_, p, _ = findReport(db, int64(1000+60*1))
+	assert.Equal(t, true, p, "alert + 1min posted")
+	_, p, _ = findReport(db, int64(1000+60*3))
+	assert.Equal(t, false, p, "alert + 3min not posted")
 }
 
 func TestVacuumDB(t *testing.T) {
@@ -356,8 +373,9 @@ func TestVacuumDB(t *testing.T) {
 		Test:     true,
 	}
 
-	db, _ := pogreb.Open(opts.StateDir, nil)
+	db, _ := sql.Open("sqlite", filepath.Join(opts.StateDir, "sabanote.db"))
 	defer db.Close()
+	_ = createTable(db)
 
 	_ = writeInfo(db, 100000-60*60*6-1, opts) // 6h+1 ago
 	_ = writeInfo(db, 100000-60*60*6, opts)   // 6h ago
@@ -366,12 +384,40 @@ func TestVacuumDB(t *testing.T) {
 
 	_ = vacuumDB(db, 100000, 60*6) // 6 h
 
-	v, _ := db.Get([]byte("100000"))
+	v, _, _ := findReport(db, 100000)
 	assert.Equal(t, "Result 100000", string(v), "now time exists")
-	v, _ = db.Get([]byte("96401")) // 100000-60*60*6+1
+	v, _, _ = findReport(db, 96401) // 100000-60*60*6+1
 	assert.Equal(t, "Result 96401", string(v), "6h-1m ago exists")
-	v, _ = db.Get([]byte("96400")) // 100000-60*60*6
+	v, _, _ = findReport(db, 96400) // 100000-60*60*6
 	assert.Equal(t, "", string(v), "6h ago is removed")
-	v, _ = db.Get([]byte("96399")) // 10000-60*60*6-1
+	v, _, _ = findReport(db, 96399) // 10000-60*60*6-1
 	assert.Equal(t, "", string(v), "6h+1m ago is removed")
+}
+
+func TestReplaceTitle(t *testing.T) {
+	opts := &sabanoteOpts{
+		Host:  "MYHOST",
+		Title: "Host <HOST> status when <ALERT> is alerted (<TIME>)",
+	}
+
+	now := time.Now().Unix()
+
+	alert := &mackerel.Alert{
+		ID:       "ALERT1",
+		OpenedAt: now,
+	}
+
+	s := replaceTitle(opts.Title, alert, opts)
+	assert.Equal(t, fmt.Sprintf("Host MYHOST status when ALERT1 is alerted (%s)", time.Unix(now, 0)), s, "default title")
+
+	s = replaceTitle("<HOST>, <ALERT>, <HOST>, <ALERT HOST>, <ALERT>", alert, opts)
+	assert.Equal(t, "MYHOST, ALERT1, MYHOST, <ALERT HOST>, ALERT1", s, "multiple replace")
+}
+
+func TestExecCmd(t *testing.T) {
+	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+		output, err := execCmd(false, "/bin/ls")
+		assert.Equal(t, nil, err, "command call is succeeeded")
+		assert.NotEmpty(t, output, "something is returned")
+	}
 }
