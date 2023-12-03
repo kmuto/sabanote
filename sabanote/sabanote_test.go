@@ -154,7 +154,8 @@ func TestGetAlerts(t *testing.T) {
 	var opts = &sabanoteOpts{}
 
 	client, _ := mackerel.NewClientWithOptions("dummy-key", ts.URL, false)
-	_, alerts, _ := getAlerts(client, opts)
+	connection, alerts, _ := getAlerts(client, opts)
+	assert.Equal(t, true, connection, "connection is up")
 	assert.Equal(t, "ALERT2", alerts[0].ID, "got alert2")
 	assert.Equal(t, "ALERT1", alerts[1].ID, "got alert1")
 	ts.Close()
@@ -177,6 +178,11 @@ func TestGetAlerts(t *testing.T) {
 	assert.Equal(t, "ALERT21", alerts[0].ID, "got 1st")
 	assert.Equal(t, "ALERT2", alerts[19].ID, "got 20th")
 	ts.Close()
+
+	client, _ = mackerel.NewClientWithOptions("dummy-key", "http://localhost:65535", false)
+	connection, _, err := getAlerts(client, opts)
+	assert.Equal(t, false, connection, "connection is down when URL is invalid")
+	assert.Equal(t, nil, err, "don't treat *url.Error as error")
 }
 
 func TestMatchAlert(t *testing.T) {
