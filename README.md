@@ -84,6 +84,16 @@ The simple database will continue to record the connectivity error, but only up 
 
 The check plugin itself returns only OK or Unknown (e.g., command execution failure or database write malformed).
 
+## Query the database
+
+The `show-sabanote` command is provided to query information stored in the database.
+
+```
+show-sabanote <database-file>
+```
+
+On Linux, the database file is `/var/lib/mackerel-agent/__sabanote/sabanote.db`.
+
 ## License
 © 2023 Kenshi Muto
 
