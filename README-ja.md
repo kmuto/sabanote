@@ -83,6 +83,16 @@ connectivity エラーが発生している状態でも簡易データベース�
 
 このチェックプラグイン自体は OK または Unknown（コマンド実行の失敗やデータベース書き込み不正など）のみを返します。
 
+## データベースの参照
+
+データベースに保存されている情報を参照するために、`show-sabanote` コマンドを用意しています。
+
+```
+show-sabanote データベースファイル
+```
+
+Linux の場合のデータベースファイルは `/var/lib/mackerel-agent/__sabanote/sabanote.db` です。
+
 ## ライセンス
 © 2023 Kenshi Muto
 
