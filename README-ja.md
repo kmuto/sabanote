@@ -91,7 +91,7 @@ connectivity エラーが発生している状態でも簡易データベース�
 show-sabanote データベースファイル
 ```
 
-Linux の場合のデータベースファイルは `/var/lib/mackerel-agent/__sabanote/sabanote.db` です。
+Linux の場合のデータベースファイルは `/var/tmp/mackerel-agent/__sabanote/sabanote.db` です。
 
 ## ライセンス
 © 2023 Kenshi Muto
