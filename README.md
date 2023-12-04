@@ -92,7 +92,11 @@ The `show-sabanote` command is provided to query information stored in the datab
 show-sabanote <database-file>
 ```
 
-On Linux, the database file is `/var/tmp/mackerel-agent/__sabanote/sabanote.db`.
+Default database location:
+
+- Linux: `/var/tmp/mackerel-agent/__sabanote/sabanote.db`
+- Windows Server 2022: `C:\Windows\SystemTemp\__sabanote\sabanote.db`
+- Windows Server 2016: `C:\Windows\Temp\__sabanote\sabanote.db`
 
 ## License
 © 2023 Kenshi Muto

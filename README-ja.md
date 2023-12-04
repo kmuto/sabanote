@@ -91,7 +91,11 @@ connectivity エラーが発生している状態でも簡易データベース�
 show-sabanote データベースファイル
 ```
 
-Linux の場合のデータベースファイルは `/var/tmp/mackerel-agent/__sabanote/sabanote.db` です。
+デフォルトのデータベースファイルの位置は以下のとおりです。
+
+- Linux: `/var/tmp/mackerel-agent/__sabanote/sabanote.db`
+- Windows Server 2022: `C:\Windows\SystemTemp\__sabanote\sabanote.db`
+- Windows Server 2016: `C:\Windows\Temp\__sabanote\sabanote.db`
 
 ## ライセンス
 © 2023 Kenshi Muto
