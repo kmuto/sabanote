@@ -8,8 +8,9 @@ builds:
   - env:
       - CGO_ENABLED=0
       - PACKAGE_PATH=github.com/kmuto/sabanote/sabanote
-    main: ./cmd/check-sabanote/main.go
-    binary: check-sabanote
+    main: ./cmd/check-sabanote
+    id: "check"
+    binary: "check-sabanote"
     goos:
       - linux
       - windows
@@ -24,6 +25,24 @@ builds:
       - -s -w
       - -X {{ .Env.PACKAGE_PATH }}.version={{ .Version }}
       - -X {{ .Env.PACKAGE_PATH }}.revision={{ .ShortCommit }}
+  - env:
+      - CGO_ENABLED=0
+      - PACKAGE_PATH=github.com/kmuto/sabanote/sabanote
+    main: ./cmd/show-sabanote
+    id: "show"
+    binary: show-sabanote
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
 
 archives:
   - format: zip
