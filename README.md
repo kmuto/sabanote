@@ -92,7 +92,7 @@ The `show-sabanote` command is provided to query information stored in the datab
 show-sabanote <database-file>
 ```
 
-On Linux, the database file is `/var/lib/mackerel-agent/__sabanote/sabanote.db`.
+On Linux, the database file is `/var/tmp/mackerel-agent/__sabanote/sabanote.db`.
 
 ## License
 © 2023 Kenshi Muto
