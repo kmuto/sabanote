@@ -19,74 +19,76 @@ import (
 )
 
 func TestParseArgs(t *testing.T) {
-	opts, err := parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE", " "))
+	opts, err := parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE", " "))
 	assert.Equal(t, nil, err, "normal parameters should be passed")
 	assert.Equal(t, "MONITOR", opts.Monitors[0], "monitor is passed correctly")
-	assert.Equal(t, "SERVICE", opts.Service, "service is passed correctly")
-	assert.Equal(t, "ROLE", opts.Roles[0], "role is passed correctly")
+	assert.Equal(t, "SERVICE", opts.AnnotationCmd.Service, "service is passed correctly")
+	assert.Equal(t, "ROLE", opts.AnnotationCmd.Roles[0], "role is passed correctly")
 
-	opts, _ = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE -H HOST --title TITLE --mem --state DIR --before 5 --after 4 --alert-frequency 2 --delay 29 --verbose", " "))
+	opts, _ = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE -H HOST --title TITLE --mem --state DIR --before 5 --after 4 --alert-frequency 2 --delay 29 --verbose", " "))
 	assert.Equal(t, "HOST", opts.Host, "host is passed correctly")
 	assert.Equal(t, "TITLE", opts.Title, "title is passed correctly")
 	assert.Equal(t, true, opts.MemorySort, "mem is passed correctly")
 	assert.Equal(t, "DIR", opts.StateDir, "state is passed correctly")
-	assert.Equal(t, 5, opts.Before, "before is passed correctly")
-	assert.Equal(t, 4, opts.After, "after is passed correctly")
+	assert.Equal(t, 5, opts.AnnotationCmd.Before, "before is passed correctly")
+	assert.Equal(t, 4, opts.AnnotationCmd.After, "after is passed correctly")
 	assert.Equal(t, 2, opts.AlertFreq, "alert-frequency is passed correctly")
 	assert.Equal(t, 29, opts.Delay, "delay is passed correctly")
 	assert.Equal(t, true, opts.Verbose, "verbose is passed correctly")
 
-	opts, _ = parseArgs(strings.Split("-m MONITOR1 -r ROLE1 -s SERVICE -r ROLE2 -r ROLE3 -m MONITOR2", " "))
+	opts, _ = parseArgs(strings.Split("annotation -m MONITOR1 -r ROLE1 -s SERVICE -r ROLE2 -r ROLE3 -m MONITOR2", " "))
 	assert.Equal(t, []string{"MONITOR1", "MONITOR2"}, opts.Monitors, "--monitor takes multiple")
-	assert.Equal(t, []string{"ROLE1", "ROLE2", "ROLE3"}, opts.Roles, "--role takes multiple")
+	assert.Equal(t, []string{"ROLE1", "ROLE2", "ROLE3"}, opts.AnnotationCmd.Roles, "--role takes multiple")
 
-	opts, _ = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --alert-frequency 0", " "))
+	opts, _ = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --alert-frequency 0", " "))
 	assert.Equal(t, 0, opts.AlertFreq, "alert-frequency accepts 0")
-	opts, _ = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --alert-frequency 30", " "))
+	opts, _ = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --alert-frequency 30", " "))
 	assert.Equal(t, 30, opts.AlertFreq, "alert-frequency accepts 30")
 
-	opts, _ = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --before 0", " "))
-	assert.Equal(t, 0, opts.Before, "before accepts 0")
-	opts, _ = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --before 5", " "))
-	assert.Equal(t, 5, opts.Before, "before accepts 5")
-	opts, _ = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --after 0", " "))
-	assert.Equal(t, 0, opts.After, "after accepts 0")
-	opts, _ = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --after 5", " "))
-	assert.Equal(t, 5, opts.After, "after accepts 5")
+	opts, _ = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --before 0", " "))
+	assert.Equal(t, 0, opts.AnnotationCmd.Before, "before accepts 0")
+	opts, _ = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --before 5", " "))
+	assert.Equal(t, 5, opts.AnnotationCmd.Before, "before accepts 5")
+	opts, _ = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --after 0", " "))
+	assert.Equal(t, 0, opts.AnnotationCmd.After, "after accepts 0")
+	opts, _ = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --after 5", " "))
+	assert.Equal(t, 5, opts.AnnotationCmd.After, "after accepts 5")
 
-	opts, _ = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --delay 0", " "))
+	opts, _ = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --delay 0", " "))
 	assert.Equal(t, 0, opts.Delay, "delay accepts 0")
-	opts, _ = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --delay 29", " "))
+	opts, _ = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --delay 29", " "))
 	assert.Equal(t, 29, opts.Delay, "delay accepts 29")
 
-	dir, _ := os.Getwd()
+	dir, _ := os.MkdirTemp("", "sabanote-test")
+	defer os.RemoveAll(dir)
+	_ = os.WriteFile(filepath.Join(dir, "exists"), []byte{1}, 0644)
 
-	opts, _ = parseArgs(strings.Split(fmt.Sprintf("-m MONITOR -s SERVICE -r ROLE --cmd %s/go.mod", dir), " "))
-	assert.Equal(t, fmt.Sprintf("%s/go.mod", dir), opts.Cmd, "cmd is passed correctly")
+	opts, _ = parseArgs(strings.Split(fmt.Sprintf("annotation -m MONITOR -s SERVICE -r ROLE --cmd %s/exists", dir), " "))
+	assert.Equal(t, fmt.Sprintf("%s/exists", dir), opts.Cmd, "cmd is passed correctly")
 
-	_, err = parseArgs(strings.Split(fmt.Sprintf("-m MONITOR -s SERVICE -r ROLE --cmd %s/go.mod --mem", dir), " "))
+	_, err = parseArgs(strings.Split(fmt.Sprintf("annotation -m MONITOR -s SERVICE -r ROLE --cmd %s/exists --mem", dir), " "))
 	assert.Equal(t, fmt.Errorf("both --mem and --cmd cannot be specified"), err, "--cmd and --mem conflict")
 
-	_, err = parseArgs(strings.Split(fmt.Sprintf("-m MONITOR -s SERVICE -r ROLE --cmd %s/unknown/go.mod", dir), " "))
-	assert.Equal(t, fmt.Errorf(fmt.Sprintf("not found %s/unknown/go.mod", dir)), err, "missing file")
+	_, err = parseArgs(strings.Split(fmt.Sprintf("annotation -m MONITOR -s SERVICE -r ROLE --cmd %s/missing", dir), " "))
+	assert.Equal(t, fmt.Errorf(fmt.Sprintf("not found %s/missing", dir)), err, "missing file")
 
-	_, err = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --alert-frequency 1", " "))
+	_, err = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --alert-frequency 1", " "))
 	assert.Equal(t, fmt.Errorf("the value of --alert-frequency must be in the range 2 to 30, or 0"), err, "alert-frequency range under")
-	_, err = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --alert-frequency 31", " "))
+	_, err = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --alert-frequency 31", " "))
 	assert.Equal(t, fmt.Errorf("the value of --alert-frequency must be in the range 2 to 30, or 0"), err, "alert-frequency range over")
 
-	_, err = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --before -1", " "))
+	_, err = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --before -1", " "))
 	assert.Equal(t, fmt.Errorf("the value of --before must be in the range 0 to 5"), err, "before range under")
-	_, err = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --before 6", " "))
+	_, err = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --before 6", " "))
 	assert.Equal(t, fmt.Errorf("the value of --before must be in the range 0 to 5"), err, "before range over")
-	_, err = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --after -1", " "))
+	_, err = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --after -1", " "))
 	assert.Equal(t, fmt.Errorf("the value of --after must be in the range 0 to 5"), err, "after range under")
-	_, err = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --after 6", " "))
+	_, err = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --after 6", " "))
 	assert.Equal(t, fmt.Errorf("the value of --after must be in the range 0 to 5"), err, "after range over")
 
-	_, err = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --delay -1", " "))
+	_, err = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --delay -1", " "))
 	assert.Equal(t, fmt.Errorf("the value of --delay must be in the range 0 to 29"), err, "delay range under")
-	_, err = parseArgs(strings.Split("-m MONITOR -s SERVICE -r ROLE --delay 30", " "))
+	_, err = parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE --delay 30", " "))
 	assert.Equal(t, fmt.Errorf("the value of --delay must be in the range 0 to 29"), err, "delay range over")
 }
 
@@ -316,11 +318,13 @@ func TestPostInfo(t *testing.T) {
 		Verbose:  false,
 		Cmd:      "",
 		Test:     true,
-		Before:   3,
-		After:    2,
-		Host:     "HOST",
-		Service:  "SERVICE",
-		Roles:    []string{"ROLE1"},
+		AnnotationCmd: &AnnotationCmd{
+			Before:  3,
+			After:   2,
+			Service: "SERVICE",
+			Roles:   []string{"ROLE1"},
+		},
+		Host: "HOST",
 	}
 
 	db, _ := sql.Open("sqlite", filepath.Join(opts.StateDir, "sabanote.db"))
@@ -346,7 +350,7 @@ func TestPostInfo(t *testing.T) {
 	}
 	_, p, _ := findReport(db, 1000)
 	assert.Equal(t, false, p, "not posted yet")
-	err := postInfo(alert, client, db, opts)
+	err := postInfo_Annotation(alert, client, db, opts)
 	assert.Equal(t, nil, err, "post is succeeded")
 	_, p, _ = findReport(db, 1000)
 	assert.Equal(t, true, p, "posted")

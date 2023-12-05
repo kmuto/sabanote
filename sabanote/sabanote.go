@@ -2,7 +2,10 @@ package sabanote
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -21,8 +24,20 @@ import (
 	"github.com/mackerelio/mackerel-client-go"
 )
 
-// XXX: better option name and description
-type sabanoteOpts struct {
+type AlertCmd struct {
+	Monitors   []string `arg:"-m,--monitor,separate,required" help:"monitor ID (accept multiple)" placeholder:"MONITOR_ID"`
+	Host       string   `arg:"-H,--host" help:"host ID" placeholder:"HOST_ID"`
+	Title      string   `arg:"--title" help:"annotation title" default:"[Host <HOST> status at <TIME>]" placeholder:"TITLE"`
+	MemorySort bool     `arg:"--mem" help:"sort by memory size (sort by CPU% by default)"`
+	Cmd        string   `arg:"-c,--cmd" help:"custom command path" placeholder:"CMD_PATH"`
+	StateDir   string   `arg:"--state" help:"state file folder" placeholder:"DIR"`
+	Before     int      `arg:"--before" help:"post the report N times before the alert occured (0-5)" default:"3" placeholder:"MINUTES"`
+	AlertFreq  int      `arg:"--alert-frequency" help:"interval for querying the presence of alerts (0 (don't check an alert), 2-30)" default:"5" placeholder:"MINUTES"`
+	Delay      int      `arg:"--delay" help:"delay seconds before running command (0-29)" default:"0" placeholder:"SECONDS"`
+	Verbose    bool     `arg:"--verbose" help:"print steps to stderr (for debug)"`
+}
+
+type AnnotationCmd struct {
 	Monitors   []string `arg:"-m,--monitor,separate,required" help:"monitor ID (accept multiple)" placeholder:"MONITOR_ID"`
 	Service    string   `arg:"-s,--service,required" help:"target service" placeholder:"SERVICE"`
 	Roles      []string `arg:"-r,--role,separate,required" help:"target role (accept multiple)" placeholder:"ROLE"`
@@ -36,7 +51,21 @@ type sabanoteOpts struct {
 	AlertFreq  int      `arg:"--alert-frequency" help:"interval for querying the presence of alerts (0 (don't check an alert), 2-30)" default:"5" placeholder:"MINUTES"`
 	Delay      int      `arg:"--delay" help:"delay seconds before running command (0-29)" default:"0" placeholder:"SECONDS"`
 	Verbose    bool     `arg:"--verbose" help:"print steps to stderr (for debug)"`
-	Test       bool     `arg:"-"`
+}
+
+type sabanoteOpts struct {
+	AlertCmd      *AlertCmd      `arg:"subcommand:alert"`
+	AnnotationCmd *AnnotationCmd `arg:"subcommand:annotation"`
+	Monitors      []string       `arg:"-"`
+	Host          string         `arg:"-"`
+	StateDir      string         `arg:"-"`
+	Title         string         `arg:"-"`
+	MemorySort    bool           `arg:"-"`
+	Cmd           string         `arg:"-"`
+	AlertFreq     int            `arg:"-"`
+	Delay         int            `arg:"-"`
+	Verbose       bool           `arg:"-"`
+	Test          bool           `arg:"-"`
 }
 
 var version string
@@ -75,35 +104,97 @@ func parseArgs(args []string) (*sabanoteOpts, error) {
 		return &so, err
 	}
 
-	if so.Cmd != "" && !fileExists(so.Cmd) {
-		err = fmt.Errorf("not found %s", so.Cmd)
+	switch {
+	case so.AlertCmd != nil:
+		return parseArgs_Alert(&so)
+	case so.AnnotationCmd != nil:
+		return parseArgs_Annotation(&so)
+	default:
+		p.WriteHelp(os.Stdout)
+		os.Exit(0)
 	}
 
-	if so.MemorySort && so.Cmd != "" {
-		err = fmt.Errorf("both --mem and --cmd cannot be specified")
+	return &so, nil
+}
+
+func parseArgs_Alert(so *sabanoteOpts) (*sabanoteOpts, error) {
+	if so.AlertCmd.Cmd != "" && !fileExists(so.AlertCmd.Cmd) {
+		return so, fmt.Errorf("not found %s", so.AlertCmd.Cmd)
 	}
 
-	if so.AlertFreq != 0 && (so.AlertFreq < 2 || so.AlertFreq > 30) {
-		err = fmt.Errorf("the value of --alert-frequency must be in the range 2 to 30, or 0")
+	if so.AlertCmd.MemorySort && so.AlertCmd.Cmd != "" {
+		return so, fmt.Errorf("both --mem and --cmd cannot be specified")
 	}
 
-	if so.Before < 0 || so.Before > 5 {
-		err = fmt.Errorf("the value of --before must be in the range 0 to 5")
+	if so.AlertCmd.AlertFreq != 0 && (so.AlertCmd.AlertFreq < 2 || so.AlertCmd.AlertFreq > 30) {
+		return so, fmt.Errorf("the value of --alert-frequency must be in the range 2 to 30, or 0")
 	}
 
-	if so.After < 0 || so.After > 5 {
-		err = fmt.Errorf("the value of --after must be in the range 0 to 5")
+	if so.AlertCmd.Before < 0 || so.AlertCmd.Before > 5 {
+		return so, fmt.Errorf("the value of --before must be in the range 0 to 5")
 	}
 
-	if so.Delay < 0 || so.Delay > 29 {
-		err = fmt.Errorf("the value of --delay must be in the range 0 to 29")
+	if so.AlertCmd.Delay < 0 || so.AlertCmd.Delay > 29 {
+		return so, fmt.Errorf("the value of --delay must be in the range 0 to 29")
 	}
 
-	if so.StateDir == "" {
-		so.StateDir = filepath.Join(pluginutil.PluginWorkDir(), "__sabanote")
+	if so.AlertCmd.StateDir == "" {
+		so.AlertCmd.StateDir = filepath.Join(pluginutil.PluginWorkDir(), "__sabanote")
 	}
 
-	return &so, err
+	so.Monitors = so.AlertCmd.Monitors
+	so.Host = so.AlertCmd.Host
+	so.StateDir = so.AlertCmd.StateDir
+	so.Title = so.AlertCmd.Title
+	so.MemorySort = so.AlertCmd.MemorySort
+	so.Cmd = so.AlertCmd.Cmd
+	so.AlertFreq = so.AlertCmd.AlertFreq
+	so.Delay = so.AlertCmd.Delay
+	so.Verbose = so.AlertCmd.Verbose
+
+	return so, nil
+}
+
+func parseArgs_Annotation(so *sabanoteOpts) (*sabanoteOpts, error) {
+	if so.AnnotationCmd.Cmd != "" && !fileExists(so.AnnotationCmd.Cmd) {
+		return so, fmt.Errorf("not found %s", so.AnnotationCmd.Cmd)
+	}
+
+	if so.AnnotationCmd.MemorySort && so.AnnotationCmd.Cmd != "" {
+		return so, fmt.Errorf("both --mem and --cmd cannot be specified")
+	}
+
+	if so.AnnotationCmd.AlertFreq != 0 && (so.AnnotationCmd.AlertFreq < 2 || so.AnnotationCmd.AlertFreq > 30) {
+		return so, fmt.Errorf("the value of --alert-frequency must be in the range 2 to 30, or 0")
+	}
+
+	if so.AnnotationCmd.Before < 0 || so.AnnotationCmd.Before > 5 {
+		return so, fmt.Errorf("the value of --before must be in the range 0 to 5")
+	}
+
+	if so.AnnotationCmd.After < 0 || so.AnnotationCmd.After > 5 {
+		return so, fmt.Errorf("the value of --after must be in the range 0 to 5")
+	}
+
+	if so.AnnotationCmd.Delay < 0 || so.AnnotationCmd.Delay > 29 {
+		return so, fmt.Errorf("the value of --delay must be in the range 0 to 29")
+	}
+
+	if so.AnnotationCmd.StateDir == "" {
+		so.AnnotationCmd.StateDir = filepath.Join(pluginutil.PluginWorkDir(), "__sabanote")
+	}
+
+	so.Monitors = so.AnnotationCmd.Monitors
+	so.Host = so.AnnotationCmd.Host
+	so.StateDir = so.AnnotationCmd.StateDir
+	so.Title = so.AnnotationCmd.Title
+	so.MemorySort = so.AnnotationCmd.MemorySort
+	so.Cmd = so.AnnotationCmd.Cmd
+	so.AlertFreq = so.AnnotationCmd.AlertFreq
+	so.Delay = so.AnnotationCmd.Delay
+	so.Verbose = so.AnnotationCmd.Verbose
+
+	return so, nil
 }
 
 func fileExists(filename string) bool {
@@ -266,7 +357,12 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 
 	if alert != nil {
 		if connection {
-			err = postInfo(alert, client, db, opts)
+			switch {
+			case opts.AlertCmd != nil:
+				err = postInfo_Alert(alert, client, db, opts)
+			case opts.AnnotationCmd != nil:
+				err = postInfo_Annotation(alert, client, db, opts)
+			}
 			if err != nil {
 				return checkers.Ok(fmt.Sprintf("post failure: %v", err))
 			}
@@ -441,7 +537,100 @@ func replaceTitle(title string, alert *mackerel.Alert, opts *sabanoteOpts) strin
 	return title
 }
 
-func postInfo(alert *mackerel.Alert, client *mackerel.Client, db *sql.DB, opts *sabanoteOpts) error {
+func postInfo_Alert(alert *mackerel.Alert, client *mackerel.Client, db *sql.DB, opts *sabanoteOpts) error {
+	rows, err := db.Query("SELECT time, report FROM reports WHERE posted = 0 ORDER BY time")
+	if err != nil {
+		return err
+	}
+
+	alertTime := alert.OpenedAt
+
+	type report struct {
+		Time   int64
+		Report string
+	}
+
+	var reports []report
+
+	for rows.Next() {
+		r := &report{}
+		err := rows.Scan(&r.Time, &r.Report)
+		if err != nil {
+			return err
+		}
+
+		if r.Time < alertTime-int64(opts.AlertCmd.Before*60) || r.Time > alertTime {
+			continue
+		}
+
+		reports = append(reports, *r)
+	}
+
+	var output string
+	for _, r := range reports {
+		dummyAlert := &mackerel.Alert{
+			ID:       alert.ID,
+			OpenedAt: r.Time,
+		}
+		title := replaceTitle(opts.Title, dummyAlert, opts)
+		// XXX: reverse order
+		output = title + "\n" + r.Report + "\n" + output
+	}
+
+	if len(output) > 81920 {
+		output = output[:81920]
+	}
+
+	if opts.Verbose {
+		fmt.Fprintf(os.Stderr, "[info] alert memo: %v\n", output)
+	}
+
+	memo := &mackerel.UpdateAlertParam{
+		Memo: output,
+	}
+	// XXX: mackerel-client-go
+	// _, err = client.UpdateAlert(alert.ID, memo)
+	_, err = updateAlert(client, alert.ID, memo)
+	if err != nil {
+		return err
+	}
+
+	for _, r := range reports {
+		_, err := db.Exec("UPDATE reports SET posted=1 WHERE time = $1", r.Time)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// XXX: copied and modified mackerel-client-go to avoid param error
+func updateAlert(c *mackerel.Client, alertID string, param *mackerel.UpdateAlertParam) (*mackerel.UpdateAlertResponse, error) {
+	resp, err := c.PutJSON(fmt.Sprintf("/api/v0/alerts/%s", alertID), param)
+	defer closeResponse(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	var data *mackerel.UpdateAlertResponse
+	err = json.NewDecoder(resp.Body).Decode(&data)
+	if err != nil {
+		return nil, err
+	}
+
+	// &data?
+	return data, nil
+}
+
+func closeResponse(resp *http.Response) {
+	if resp != nil {
+		io.Copy(io.Discard, resp.Body) // nolint
+		resp.Body.Close()
+	}
+}
+
+func postInfo_Annotation(alert *mackerel.Alert, client *mackerel.Client, db *sql.DB, opts *sabanoteOpts) error {
 	countLimit := 10                // max posts per once running
 	annotationDuration := int64(30) // set annotation endtime to time + 30 seconds
 
@@ -467,7 +656,7 @@ func postInfo(alert *mackerel.Alert, client *mackerel.Client, db *sql.DB, opts *
 			return err
 		}
 
-		if r.Time < alertTime-int64(opts.Before*60) || r.Time > alertTime+int64(opts.After*60) {
+		if r.Time < alertTime-int64(opts.AnnotationCmd.Before*60) || r.Time > alertTime+int64(opts.AnnotationCmd.After*60) {
 			continue
 		}
 
@@ -490,8 +679,8 @@ func postInfo(alert *mackerel.Alert, client *mackerel.Client, db *sql.DB, opts *
 			Description: r.Report,
 			From:        r.Time,
 			To:          r.Time + annotationDuration,
-			Service:     opts.Service,
-			Roles:       opts.Roles,
+			Service:     opts.AnnotationCmd.Service,
+			Roles:       opts.AnnotationCmd.Roles,
 		}
 
 		_, err = client.CreateGraphAnnotation(annotation)
