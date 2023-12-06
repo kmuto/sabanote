@@ -3,8 +3,6 @@ package sabanote
 import (
 	"database/sql"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -600,13 +598,6 @@ func postInfo_Alert(alert *mackerel.Alert, client *mackerel.Client, db *sql.DB, 
 	}
 
 	return nil
-}
-
-func closeResponse(resp *http.Response) {
-	if resp != nil {
-		io.Copy(io.Discard, resp.Body) // nolint
-		resp.Body.Close()
-	}
 }
 
 func postInfo_Annotation(alert *mackerel.Alert, client *mackerel.Client, db *sql.DB, opts *sabanoteOpts) error {
