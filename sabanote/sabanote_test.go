@@ -18,7 +18,69 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestParseArgs(t *testing.T) {
+func TestParseArgs_Alert(t *testing.T) {
+	opts, err := parseArgs(strings.Split("alert -m MONITOR", " "))
+	assert.Equal(t, nil, err, "normal parameters should be passed")
+	assert.Equal(t, "MONITOR", opts.Monitors[0], "monitor is passed correctly")
+
+	opts, _ = parseArgs(strings.Split("alert -m MONITOR -H HOST --title TITLE --mem --state DIR --before 5 --alert-frequency 2 --delay 29 --verbose", " "))
+	assert.Equal(t, "HOST", opts.Host, "host is passed correctly")
+	assert.Equal(t, "TITLE", opts.Title, "title is passed correctly")
+	assert.Equal(t, true, opts.MemorySort, "mem is passed correctly")
+	assert.Equal(t, "DIR", opts.StateDir, "state is passed correctly")
+	assert.Equal(t, 5, opts.AlertCmd.Before, "before is passed correctly")
+	assert.Equal(t, 2, opts.AlertFreq, "alert-frequency is passed correctly")
+	assert.Equal(t, 29, opts.Delay, "delay is passed correctly")
+	assert.Equal(t, true, opts.Verbose, "verbose is passed correctly")
+
+	opts, _ = parseArgs(strings.Split("alert -m MONITOR1 -m MONITOR2", " "))
+	assert.Equal(t, []string{"MONITOR1", "MONITOR2"}, opts.Monitors, "--monitor takes multiple")
+
+	opts, _ = parseArgs(strings.Split("alert -m MONITOR --alert-frequency 0", " "))
+	assert.Equal(t, 0, opts.AlertFreq, "alert-frequency accepts 0")
+	opts, _ = parseArgs(strings.Split("alert -m MONITOR --alert-frequency 30", " "))
+	assert.Equal(t, 30, opts.AlertFreq, "alert-frequency accepts 30")
+
+	opts, _ = parseArgs(strings.Split("alert -m MONITOR --before 0", " "))
+	assert.Equal(t, 0, opts.AlertCmd.Before, "before accepts 0")
+	opts, _ = parseArgs(strings.Split("alert -m MONITOR --before 5", " "))
+	assert.Equal(t, 5, opts.AlertCmd.Before, "before accepts 5")
+
+	opts, _ = parseArgs(strings.Split("alert -m MONITOR --delay 0", " "))
+	assert.Equal(t, 0, opts.Delay, "delay accepts 0")
+	opts, _ = parseArgs(strings.Split("alert -m MONITOR --delay 29", " "))
+	assert.Equal(t, 29, opts.Delay, "delay accepts 29")
+
+	dir, _ := os.MkdirTemp("", "sabanote-test")
+	defer os.RemoveAll(dir)
+	_ = os.WriteFile(filepath.Join(dir, "exists"), []byte{1}, 0644)
+
+	opts, _ = parseArgs(strings.Split(fmt.Sprintf("alert -m MONITOR --cmd %s/exists", dir), " "))
+	assert.Equal(t, fmt.Sprintf("%s/exists", dir), opts.Cmd, "cmd is passed correctly")
+
+	_, err = parseArgs(strings.Split(fmt.Sprintf("alert -m MONITOR --cmd %s/exists --mem", dir), " "))
+	assert.Equal(t, fmt.Errorf("both --mem and --cmd cannot be specified"), err, "--cmd and --mem conflict")
+
+	_, err = parseArgs(strings.Split(fmt.Sprintf("alert -m MONITOR --cmd %s/missing", dir), " "))
+	assert.Equal(t, fmt.Errorf(fmt.Sprintf("not found %s/missing", dir)), err, "missing file")
+
+	_, err = parseArgs(strings.Split("alert -m MONITOR --alert-frequency 1", " "))
+	assert.Equal(t, fmt.Errorf("the value of --alert-frequency must be in the range 2 to 30, or 0"), err, "alert-frequency range under")
+	_, err = parseArgs(strings.Split("alert -m MONITOR --alert-frequency 31", " "))
+	assert.Equal(t, fmt.Errorf("the value of --alert-frequency must be in the range 2 to 30, or 0"), err, "alert-frequency range over")
+
+	_, err = parseArgs(strings.Split("alert -m MONITOR --before -1", " "))
+	assert.Equal(t, fmt.Errorf("the value of --before must be in the range 0 to 5"), err, "before range under")
+	_, err = parseArgs(strings.Split("alert -m MONITOR --before 6", " "))
+	assert.Equal(t, fmt.Errorf("the value of --before must be in the range 0 to 5"), err, "before range over")
+
+	_, err = parseArgs(strings.Split("alert -m MONITOR --delay -1", " "))
+	assert.Equal(t, fmt.Errorf("the value of --delay must be in the range 0 to 29"), err, "delay range under")
+	_, err = parseArgs(strings.Split("alert -m MONITOR --delay 30", " "))
+	assert.Equal(t, fmt.Errorf("the value of --delay must be in the range 0 to 29"), err, "delay range over")
+}
+
+func TestParseArgs_Annotation(t *testing.T) {
 	opts, err := parseArgs(strings.Split("annotation -m MONITOR -s SERVICE -r ROLE", " "))
 	assert.Equal(t, nil, err, "normal parameters should be passed")
 	assert.Equal(t, "MONITOR", opts.Monitors[0], "monitor is passed correctly")
@@ -103,7 +165,19 @@ func AlertServer(jsonMarshal []byte) *httptest.Server {
 		var respJSON []byte
 		switch fmt.Sprintf("%v", req.URL.Path) {
 		case "/api/v0/alerts":
-			respJSON = jsonMarshal
+			if req.Method == "GET" {
+				respJSON = jsonMarshal
+			} else { // XXX:PUT
+				urlpath := req.URL.Path
+				parts := strings.Split(urlpath, "/")
+				body, _ := io.ReadAll(req.Body)
+				var data mackerel.UpdateAlertParam
+				_ = json.Unmarshal(body, &data)
+				respJSON, _ = json.Marshal(map[string]string{
+					"id":   parts[len(parts)-1],
+					"memo": data.Memo,
+				})
+			}
 		case "/api/v0/graph-annotations":
 			if req.Method == "GET" {
 				respJSON, _ = json.Marshal(annotations)
