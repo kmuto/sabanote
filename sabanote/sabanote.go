@@ -2,10 +2,7 @@ package sabanote
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -585,12 +582,10 @@ func postInfo_Alert(alert *mackerel.Alert, client *mackerel.Client, db *sql.DB, 
 		fmt.Fprintf(os.Stderr, "[info] alert memo: %v\n", output)
 	}
 
-	memo := &mackerel.UpdateAlertParam{
+	memo := mackerel.UpdateAlertParam{
 		Memo: output,
 	}
-	// XXX: mackerel-client-go
-	// _, err = client.UpdateAlert(alert.ID, memo)
-	_, err = updateAlert(client, alert.ID, memo)
+	_, err = client.UpdateAlert(alert.ID, memo)
 	if err != nil {
 		return err
 	}
@@ -603,31 +598,6 @@ func postInfo_Alert(alert *mackerel.Alert, client *mackerel.Client, db *sql.DB, 
 	}
 
 	return nil
-}
-
-// XXX: copied and modified mackerel-client-go to avoid param error
-func updateAlert(c *mackerel.Client, alertID string, param *mackerel.UpdateAlertParam) (*mackerel.UpdateAlertResponse, error) {
-	resp, err := c.PutJSON(fmt.Sprintf("/api/v0/alerts/%s", alertID), param)
-	defer closeResponse(resp)
-	if err != nil {
-		return nil, err
-	}
-
-	var data *mackerel.UpdateAlertResponse
-	err = json.NewDecoder(resp.Body).Decode(&data)
-	if err != nil {
-		return nil, err
-	}
-
-	// &data?
-	return data, nil
-}
-
-func closeResponse(resp *http.Response) {
-	if resp != nil {
-		io.Copy(io.Discard, resp.Body) // nolint
-		resp.Body.Close()
-	}
 }
 
 func postInfo_Annotation(alert *mackerel.Alert, client *mackerel.Client, db *sql.DB, opts *sabanoteOpts) error {
