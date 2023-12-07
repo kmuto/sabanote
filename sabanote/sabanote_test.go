@@ -382,23 +382,24 @@ func TestWriteInfo(t *testing.T) {
 	assert.Equal(t, "", v, "empty is returned for invalid key")
 }
 
-func TestPostInfo(t *testing.T) {
+func TestPostInfo_Annotation(t *testing.T) {
 	dir, _ := os.MkdirTemp("", "sabanote-test")
 	defer os.RemoveAll(dir)
 
+	annotationCmd := AnnotationCmd{
+		CommonCmd: CommonCmd{Before: 3},
+		After:     2,
+		Service:   "SERVICE",
+		Roles:     []string{"ROLE1"},
+	}
 	opts := &sabanoteOpts{
-		StateDir: dir,
-		Delay:    0,
-		Verbose:  false,
-		Cmd:      "",
-		Test:     true,
-		AnnotationCmd: &AnnotationCmd{
-			Before:  3,
-			After:   2,
-			Service: "SERVICE",
-			Roles:   []string{"ROLE1"},
-		},
-		Host: "HOST",
+		StateDir:      dir,
+		Delay:         0,
+		Verbose:       false,
+		Cmd:           "",
+		Test:          true,
+		AnnotationCmd: &annotationCmd,
+		Host:          "HOST",
 	}
 
 	db, _ := sql.Open("sqlite", filepath.Join(opts.StateDir, "sabanote.db"))
