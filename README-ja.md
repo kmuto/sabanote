@@ -8,9 +8,11 @@
 
 具体的には、対象のアラートが発生したときに、発生時刻付近のホスト上の高負荷なプロセス情報または任意のコマンド実行結果を[アラートメモ](https://mackerel.io/ja/blog/entry/weekly/20160909)または[グラフアノテーション](https://mackerel.io/ja/docs/entry/howto/view-graphs#graph-annotations)に書き込みます。
 
-![アラートメモへの書き込み結果](alert.png)
+**アラートメモへの書き込み結果**
+![](alert.png)
 
-![グラフアノテーションへの書き込み結果](graph.png)
+**グラフアノテーションへの書き込み結果**
+![](graph.png)
 
 ## 概要
 
@@ -29,6 +31,8 @@ check-sabanote alert -m MONITOR_ID1 -m MONITOR_ID2
 ```
 check-sabanote annotation -m MONITOR_ID -s SERVICE -r ROLE [その他のオプション]
 ```
+
+---
 
 グラフアノテーションを書き込み対象とする場合、最低限必要な指定は、監視対象の監視ルール ID（`-m`）、グラフアノテーションを投稿する対象のサービス名（`-s`）およびロール名（`-r`）です。監視ルール ID とロールは複数指定できます。
 
