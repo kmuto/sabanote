@@ -73,7 +73,14 @@ mackerel-agent.conf にプラグインの設定を記述してください。
 
 ```
 [plugin.checks.sabanote]
-command = ["check-sabanote", "-m", "MONITOR_ID", "-s", "SERVICE_NAME", "-r", "ROLE_NAME"]
+command = ["check-sabanote", "alert", "-m", "MONITOR_ID"]
+```
+
+または
+
+```
+[plugin.checks.sabanote]
+command = ["check-sabanote", "annotation",  "-m", "MONITOR_ID", "-s", "SERVICE_NAME", "-r", "ROLE_NAME"]
 ```
 
 ## 使い方
