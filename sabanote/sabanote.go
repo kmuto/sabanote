@@ -21,10 +21,9 @@ import (
 	"github.com/mackerelio/mackerel-client-go"
 )
 
-type AlertCmd struct {
+type CommonCmd struct {
 	Monitors   []string `arg:"-m,--monitor,separate,required" help:"monitor ID (accept multiple)" placeholder:"MONITOR_ID"`
 	Host       string   `arg:"-H,--host" help:"host ID" placeholder:"HOST_ID"`
-	Title      string   `arg:"--title" help:"annotation title" default:"[Host <HOST> status at <TIME>]" placeholder:"TITLE"`
 	MemorySort bool     `arg:"--mem" help:"sort by memory size (sort by CPU% by default)"`
 	Cmd        string   `arg:"-c,--cmd" help:"custom command path" placeholder:"CMD_PATH"`
 	StateDir   string   `arg:"--state" help:"state file folder" placeholder:"DIR"`
@@ -34,20 +33,17 @@ type AlertCmd struct {
 	Verbose    bool     `arg:"--verbose" help:"print steps to stderr (for debug)"`
 }
 
+type AlertCmd struct {
+	CommonCmd
+	Title string `arg:"--title" help:"annotation title" default:"[Host <HOST> status at <TIME>]" placeholder:"TITLE"`
+}
+
 type AnnotationCmd struct {
-	Monitors   []string `arg:"-m,--monitor,separate,required" help:"monitor ID (accept multiple)" placeholder:"MONITOR_ID"`
-	Service    string   `arg:"-s,--service,required" help:"target service" placeholder:"SERVICE"`
-	Roles      []string `arg:"-r,--role,separate,required" help:"target role (accept multiple)" placeholder:"ROLE"`
-	Host       string   `arg:"-H,--host" help:"host ID" placeholder:"HOST_ID"`
-	Title      string   `arg:"--title" help:"annotation title" default:"Host <HOST> status when <ALERT> is alerted (<TIME>)" placeholder:"TITLE"`
-	MemorySort bool     `arg:"--mem" help:"sort by memory size (sort by CPU% by default)"`
-	Cmd        string   `arg:"-c,--cmd" help:"custom command path" placeholder:"CMD_PATH"`
-	StateDir   string   `arg:"--state" help:"state file folder" placeholder:"DIR"`
-	Before     int      `arg:"--before" help:"post the report N times before the alert occured (0-5)" default:"3" placeholder:"MINUTES"`
-	After      int      `arg:"--after" help:"post the report N times after the alert occured (0-5)" default:"1" placeholder:"MINUTES"`
-	AlertFreq  int      `arg:"--alert-frequency" help:"interval for querying the presence of alerts (0 (don't check an alert), 2-30)" default:"5" placeholder:"MINUTES"`
-	Delay      int      `arg:"--delay" help:"delay seconds before running command (0-29)" default:"0" placeholder:"SECONDS"`
-	Verbose    bool     `arg:"--verbose" help:"print steps to stderr (for debug)"`
+	CommonCmd
+	Title   string   `arg:"--title" help:"annotation title" default:"Host <HOST> status when <ALERT> is alerted (<TIME>)" placeholder:"TITLE"`
+	Service string   `arg:"-s,--service,required" help:"target service" placeholder:"SERVICE"`
+	Roles   []string `arg:"-r,--role,separate,required" help:"target role (accept multiple)" placeholder:"ROLE"`
+	After   int      `arg:"--after" help:"post the report N times after the alert occured (0-5)" default:"1" placeholder:"MINUTES"`
 }
 
 type sabanoteOpts struct {
@@ -55,13 +51,14 @@ type sabanoteOpts struct {
 	AnnotationCmd *AnnotationCmd `arg:"subcommand:annotation"`
 	Monitors      []string       `arg:"-"`
 	Host          string         `arg:"-"`
-	StateDir      string         `arg:"-"`
-	Title         string         `arg:"-"`
 	MemorySort    bool           `arg:"-"`
 	Cmd           string         `arg:"-"`
+	StateDir      string         `arg:"-"`
+	Before        int            `arg:"-"`
 	AlertFreq     int            `arg:"-"`
 	Delay         int            `arg:"-"`
 	Verbose       bool           `arg:"-"`
+	Title         string         `arg:"-"`
 	Test          bool           `arg:"-"`
 }
 
@@ -98,100 +95,66 @@ func parseArgs(args []string) (*sabanoteOpts, error) {
 		fmt.Println(so.Version())
 		os.Exit(0)
 	case err != nil:
-		return &so, err
+		return nil, err
 	}
 
 	switch {
 	case so.AlertCmd != nil:
-		return parseArgs_Alert(&so)
+		so.Monitors = so.AlertCmd.Monitors
+		so.Host = so.AlertCmd.Host
+		so.StateDir = so.AlertCmd.StateDir
+		so.Title = so.AlertCmd.Title
+		so.MemorySort = so.AlertCmd.MemorySort
+		so.Cmd = so.AlertCmd.Cmd
+		so.Before = so.AlertCmd.Before
+		so.AlertFreq = so.AlertCmd.AlertFreq
+		so.Delay = so.AlertCmd.Delay
+		so.Verbose = so.AlertCmd.Verbose
 	case so.AnnotationCmd != nil:
-		return parseArgs_Annotation(&so)
+		so.Monitors = so.AnnotationCmd.Monitors
+		so.Host = so.AnnotationCmd.Host
+		so.StateDir = so.AnnotationCmd.StateDir
+		so.Title = so.AnnotationCmd.Title
+		so.MemorySort = so.AnnotationCmd.MemorySort
+		so.Cmd = so.AnnotationCmd.Cmd
+		so.Before = so.AnnotationCmd.Before
+		so.AlertFreq = so.AnnotationCmd.AlertFreq
+		so.Delay = so.AnnotationCmd.Delay
+		so.Verbose = so.AnnotationCmd.Verbose
+
+		if so.AnnotationCmd.After < 0 || so.AnnotationCmd.After > 5 {
+			return nil, fmt.Errorf("the value of --after must be in the range 0 to 5")
+		}
 	default:
 		p.WriteHelp(os.Stdout)
 		os.Exit(0)
 	}
 
+	if so.Cmd != "" && !fileExists(so.Cmd) {
+		return nil, fmt.Errorf("not found %s", so.Cmd)
+	}
+
+	if so.MemorySort && so.Cmd != "" {
+		return nil, fmt.Errorf("both --mem and --cmd cannot be specified")
+	}
+
+	if so.AlertFreq != 0 && (so.AlertFreq < 2 || so.AlertFreq > 30) {
+		return nil, fmt.Errorf("the value of --alert-frequency must be in the range 2 to 30, or 0")
+	}
+
+	if so.Before < 0 || so.Before > 5 {
+		return nil, fmt.Errorf("the value of --before must be in the range 0 to 5")
+	}
+
+	if so.Delay < 0 || so.Delay > 29 {
+		return nil, fmt.Errorf("the value of --delay must be in the range 0 to 29")
+	}
+
+	if so.StateDir == "" {
+		so.StateDir = filepath.Join(pluginutil.PluginWorkDir(), "__sabanote")
+	}
+
 	return &so, nil
-}
-
-func parseArgs_Alert(so *sabanoteOpts) (*sabanoteOpts, error) {
-	if so.AlertCmd.Cmd != "" && !fileExists(so.AlertCmd.Cmd) {
-		return so, fmt.Errorf("not found %s", so.AlertCmd.Cmd)
-	}
-
-	if so.AlertCmd.MemorySort && so.AlertCmd.Cmd != "" {
-		return so, fmt.Errorf("both --mem and --cmd cannot be specified")
-	}
-
-	if so.AlertCmd.AlertFreq != 0 && (so.AlertCmd.AlertFreq < 2 || so.AlertCmd.AlertFreq > 30) {
-		return so, fmt.Errorf("the value of --alert-frequency must be in the range 2 to 30, or 0")
-	}
-
-	if so.AlertCmd.Before < 0 || so.AlertCmd.Before > 5 {
-		return so, fmt.Errorf("the value of --before must be in the range 0 to 5")
-	}
-
-	if so.AlertCmd.Delay < 0 || so.AlertCmd.Delay > 29 {
-		return so, fmt.Errorf("the value of --delay must be in the range 0 to 29")
-	}
-
-	if so.AlertCmd.StateDir == "" {
-		so.AlertCmd.StateDir = filepath.Join(pluginutil.PluginWorkDir(), "__sabanote")
-	}
-
-	so.Monitors = so.AlertCmd.Monitors
-	so.Host = so.AlertCmd.Host
-	so.StateDir = so.AlertCmd.StateDir
-	so.Title = so.AlertCmd.Title
-	so.MemorySort = so.AlertCmd.MemorySort
-	so.Cmd = so.AlertCmd.Cmd
-	so.AlertFreq = so.AlertCmd.AlertFreq
-	so.Delay = so.AlertCmd.Delay
-	so.Verbose = so.AlertCmd.Verbose
-
-	return so, nil
-}
-
-func parseArgs_Annotation(so *sabanoteOpts) (*sabanoteOpts, error) {
-	if so.AnnotationCmd.Cmd != "" && !fileExists(so.AnnotationCmd.Cmd) {
-		return so, fmt.Errorf("not found %s", so.AnnotationCmd.Cmd)
-	}
-
-	if so.AnnotationCmd.MemorySort && so.AnnotationCmd.Cmd != "" {
-		return so, fmt.Errorf("both --mem and --cmd cannot be specified")
-	}
-
-	if so.AnnotationCmd.AlertFreq != 0 && (so.AnnotationCmd.AlertFreq < 2 || so.AnnotationCmd.AlertFreq > 30) {
-		return so, fmt.Errorf("the value of --alert-frequency must be in the range 2 to 30, or 0")
-	}
-
-	if so.AnnotationCmd.Before < 0 || so.AnnotationCmd.Before > 5 {
-		return so, fmt.Errorf("the value of --before must be in the range 0 to 5")
-	}
-
-	if so.AnnotationCmd.After < 0 || so.AnnotationCmd.After > 5 {
-		return so, fmt.Errorf("the value of --after must be in the range 0 to 5")
-	}
-
-	if so.AnnotationCmd.Delay < 0 || so.AnnotationCmd.Delay > 29 {
-		return so, fmt.Errorf("the value of --delay must be in the range 0 to 29")
-	}
-
-	if so.AnnotationCmd.StateDir == "" {
-		so.AnnotationCmd.StateDir = filepath.Join(pluginutil.PluginWorkDir(), "__sabanote")
-	}
-
-	so.Monitors = so.AnnotationCmd.Monitors
-	so.Host = so.AnnotationCmd.Host
-	so.StateDir = so.AnnotationCmd.StateDir
-	so.Title = so.AnnotationCmd.Title
-	so.MemorySort = so.AnnotationCmd.MemorySort
-	so.Cmd = so.AnnotationCmd.Cmd
-	so.AlertFreq = so.AnnotationCmd.AlertFreq
-	so.Delay = so.AnnotationCmd.Delay
-	so.Verbose = so.AnnotationCmd.Verbose
-
-	return so, nil
 }
 
 func fileExists(filename string) bool {
@@ -483,6 +446,7 @@ func writeInfo(db *sql.DB, now int64, opts *sabanoteOpts) error {
 }
 
 func execCmd(verbose bool, name string, cmdargs ...string) ([]byte, error) {
+	const maxAnnotationLength = 1023 // XXX: Annotation size limit
 	if verbose {
 		fmt.Fprintf(os.Stderr, "[info] execute: %s %s\n", name, cmdargs)
 	}
@@ -491,8 +455,8 @@ func execCmd(verbose bool, name string, cmdargs ...string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(out) > 1023 {
-		out = out[:1023]
+	if len(out) > maxAnnotationLength {
+		out = out[:maxAnnotationLength]
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("command returns nothing")
@@ -535,6 +499,7 @@ func replaceTitle(title string, alert *mackerel.Alert, opts *sabanoteOpts) strin
 }
 
 func postInfo_Alert(alert *mackerel.Alert, client *mackerel.Client, db *sql.DB, opts *sabanoteOpts) error {
+	const maxAlertMemoLength = 83920 // XXX: Alert memo size limit
 	rows, err := db.Query("SELECT time, report FROM reports WHERE posted = 0 ORDER BY time")
 	if err != nil {
 		return err
@@ -574,8 +539,8 @@ func postInfo_Alert(alert *mackerel.Alert, client *mackerel.Client, db *sql.DB, 
 		output = title + "\n" + r.Report + "\n" + output
 	}
 
-	if len(output) > 81920 {
-		output = output[:81920]
+	if len(output) > maxAlertMemoLength {
+		output = output[:maxAlertMemoLength]
 	}
 
 	if opts.Verbose {
