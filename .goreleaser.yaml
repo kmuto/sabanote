@@ -52,6 +52,7 @@ archives:
     - README.md
     - README-ja.md
     - LICENSE
+    - sabanote.png
     - graph.png
     - alert.png
 checksum:
