@@ -34,13 +34,13 @@ check-sabanote alert -m MONITOR_ID1 -m MONITOR_ID2
 check-sabanote annotation -m MONITOR_ID -s SERVICE -r ROLE [その他のオプション]
 ```
 
----
-
 グラフアノテーションを書き込み対象とする場合、最低限必要な指定は、監視対象の監視ルール ID（`-m`）、グラフアノテーションを投稿する対象のサービス名（`-s`）およびロール名（`-r`）です。監視ルール ID とロールは複数指定できます。
 
 ```
 check-sabanote -m MONITOR_ID1 -m MONITOR_ID2 -s SERVICE -r ROLE1 -r ROLE2
 ```
+
+---
 
 監視ルール ID は、監視ルールを開いたときの URL `https://mackerel.io/my/monitors/<XXXXXXXX>` の `<XXXXXXXX>` の部分です。`mkr monitors` で調べることもできます。
 
