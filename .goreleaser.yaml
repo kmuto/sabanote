@@ -50,8 +50,10 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     files:
     - README.md
+    - README-ja.md
     - LICENSE
     - graph.png
+    - alert.png
 checksum:
   name_template: 'checksums.txt'
 snapshot:
