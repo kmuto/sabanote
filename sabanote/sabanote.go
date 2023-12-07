@@ -446,6 +446,7 @@ func writeInfo(db *sql.DB, now int64, opts *sabanoteOpts) error {
 }
 
 func execCmd(verbose bool, name string, cmdargs ...string) ([]byte, error) {
+	const maxAnnotationLength = 1023 // XXX: Annotation size limit
 	if verbose {
 		fmt.Fprintf(os.Stderr, "[info] execute: %s %s\n", name, cmdargs)
 	}
@@ -454,8 +455,8 @@ func execCmd(verbose bool, name string, cmdargs ...string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(out) > 1023 {
-		out = out[:1023]
+	if len(out) > maxAnnotationLength {
+		out = out[:maxAnnotationLength]
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("command returns nothing")
@@ -498,6 +499,7 @@ func replaceTitle(title string, alert *mackerel.Alert, opts *sabanoteOpts) strin
 }
 
 func postInfo_Alert(alert *mackerel.Alert, client *mackerel.Client, db *sql.DB, opts *sabanoteOpts) error {
+	const maxAlertMemoLength = 83920 // XXX: Alert memo size limit
 	rows, err := db.Query("SELECT time, report FROM reports WHERE posted = 0 ORDER BY time")
 	if err != nil {
 		return err
@@ -537,8 +539,8 @@ func postInfo_Alert(alert *mackerel.Alert, client *mackerel.Client, db *sql.DB, 
 		output = title + "\n" + r.Report + "\n" + output
 	}
 
-	if len(output) > 81920 {
-		output = output[:81920]
+	if len(output) > maxAlertMemoLength {
+		output = output[:maxAlertMemoLength]
 	}
 
 	if opts.Verbose {
