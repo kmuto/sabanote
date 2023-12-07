@@ -2,6 +2,8 @@
 
 [English](README.md)
 
+![](sabanote.png)
+
 ## 説明
 
 **sabanote**（さばのて）は、SaaS 型監視サービス [Mackerel](https://ja.mackerel.io) のエージェントのプラグインとして動作し、プロセス情報などを定期的に記録して、アラート発生時にはそれを Mackerel 上に提示します。

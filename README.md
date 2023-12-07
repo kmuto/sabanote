@@ -2,6 +2,8 @@
 
 [日本語](README-ja.md)
 
+![](sabanote.png)
+
 ## Description
 
 **sabanote** works as a plug-in for the agent of the SaaS monitoring service [Mackerel](https://mackerel.io), regularly recording process information (or other information) and presenting it on Mackerel when alert occur.
