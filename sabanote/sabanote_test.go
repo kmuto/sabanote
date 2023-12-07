@@ -78,6 +78,15 @@ func TestParseArgs_Alert(t *testing.T) {
 	assert.Equal(t, fmt.Errorf("the value of --delay must be in the range 0 to 29"), err, "delay range under")
 	_, err = parseArgs(strings.Split("alert -m MONITOR --delay 30", " "))
 	assert.Equal(t, fmt.Errorf("the value of --delay must be in the range 0 to 29"), err, "delay range over")
+
+	_, err = parseArgs(strings.Split("alert annotation", " "))
+	assert.Equal(t, fmt.Errorf("too many positional arguments at 'annotation'"), err, "subcommand duplication error (alert annotation)")
+
+	_, err = parseArgs(strings.Split("alert alert", " "))
+	assert.Equal(t, fmt.Errorf("too many positional arguments at 'alert'"), err, "subcommand duplication error (alert alert)")
+
+	_, err = parseArgs(strings.Split("annotation alert", " "))
+	assert.Equal(t, fmt.Errorf("too many positional arguments at 'alert'"), err, "subcommand duplication error (annotation alert)")
 }
 
 func TestParseArgs_Annotation(t *testing.T) {
@@ -161,18 +170,37 @@ func AlertServer(jsonMarshal []byte) *httptest.Server {
 	annotations := Annotations{
 		GraphAnnotations: make([]*mackerel.GraphAnnotation, 0),
 	}
+	alertMemo := make([]*mackerel.Alert, 0)
+
 	ts := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
 		var respJSON []byte
 		switch fmt.Sprintf("%v", req.URL.Path) {
 		case "/api/v0/alerts":
 			if req.Method == "GET" {
 				respJSON = jsonMarshal
+			}
+		case "/api/v0/alerts/ALERT1":
+			if req.Method == "GET" {
+				if len(alertMemo) > 0 {
+					respJSON, _ = json.Marshal(map[string]string{
+						"id":   alertMemo[0].ID,
+						"memo": alertMemo[0].Memo,
+					})
+				} else {
+					respJSON, _ = json.Marshal(map[string]map[string]string{
+						"error": {"message": "no alert info"},
+					})
+				}
 			} else { // XXX:PUT
 				urlpath := req.URL.Path
 				parts := strings.Split(urlpath, "/")
 				body, _ := io.ReadAll(req.Body)
 				var data mackerel.UpdateAlertParam
 				_ = json.Unmarshal(body, &data)
+				alertMemo = append(alertMemo, &mackerel.Alert{
+					ID:   parts[len(parts)-2],
+					Memo: data.Memo,
+				})
 				respJSON, _ = json.Marshal(map[string]string{
 					"id":   parts[len(parts)-1],
 					"memo": data.Memo,
@@ -380,6 +408,64 @@ func TestWriteInfo(t *testing.T) {
 	assert.Equal(t, "Result 1000", v, "string is written")
 	v, _, _ = findReport(db, 0)
 	assert.Equal(t, "", v, "empty is returned for invalid key")
+}
+
+func TestPostInfo_Alert(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "sabanote-test")
+	defer os.RemoveAll(dir)
+
+	alertCmd := AlertCmd{
+		CommonCmd: CommonCmd{Before: 3},
+	}
+	opts := &sabanoteOpts{
+		StateDir: dir,
+		Delay:    0,
+		Verbose:  false,
+		Cmd:      "",
+		Test:     true,
+		AlertCmd: &alertCmd,
+		Host:     "HOST",
+	}
+
+	db, _ := sql.Open("sqlite", filepath.Join(opts.StateDir, "sabanote.db"))
+	defer db.Close()
+	_ = createTable(db)
+
+	_ = writeInfo(db, 1000-60*4, opts)
+	_ = writeInfo(db, 1000-60*3, opts)
+	_ = writeInfo(db, 1000-60*2, opts)
+	_ = writeInfo(db, 1000-60*1, opts)
+	_ = writeInfo(db, 1000, opts)
+	_ = writeInfo(db, 1000+60*1, opts)
+	_ = writeInfo(db, 1000+60*2, opts)
+	_ = writeInfo(db, 1000+60*3, opts)
+	_ = writeInfo(db, 10000, opts)
+
+	ts := AlertServer(nil)
+	defer ts.Close()
+	client, _ := mackerel.NewClientWithOptions("dummy-key", ts.URL, false)
+	alert := &mackerel.Alert{
+		ID:       "ALERT1",
+		OpenedAt: 1000,
+	}
+	_, p, _ := findReport(db, 1000)
+	assert.Equal(t, false, p, "not posted yet")
+	err := postInfo_Alert(alert, client, db, opts)
+	assert.Equal(t, nil, err, "post is succeeded")
+	_, p, _ = findReport(db, 1000)
+	assert.Equal(t, true, p, "posted")
+
+	alertWithMemo, _ := client.GetAlert("ALERT1")
+	assert.Equal(t, "\nResult 1000\n\nResult 940\n\nResult 880\n\nResult 820\n", alertWithMemo.Memo, "posted alert memo")
+
+	_, p, _ = findReport(db, int64(1000-60*4))
+	assert.Equal(t, false, p, "alet - 4min not posted")
+	_, p, _ = findReport(db, int64(1000-60*3))
+	assert.Equal(t, true, p, "alert - 3min posted")
+	_, p, _ = findReport(db, int64(1000+60*1))
+	assert.Equal(t, false, p, "alert + 1min not posted")
+	_, p, _ = findReport(db, int64(1000+60*3))
+	assert.Equal(t, false, p, "alert + 3min not posted")
 }
 
 func TestPostInfo_Annotation(t *testing.T) {
