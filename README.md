@@ -82,7 +82,7 @@ or
 
 ```
 [plugin.checks.sabanote]
-command = ["check-sabanote", "annotation",  "-m", "MONITOR_ID", "-s", "SERVICE_NAME", "-r", "ROLE_NAME"]
+command = ["/opt/mackerel-agent/plugins/bin/check-sabanote", "annotation",  "-m", "MONITOR_ID", "-s", "SERVICE_NAME", "-r", "ROLE_NAME"]
 ```
 
 ##### Windows
