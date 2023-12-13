@@ -73,9 +73,10 @@ sudo mkr plugin install kmuto/sabanote
 
 mackerel-agent.conf にプラグインの設定を記述してください。
 
+##### Linux
 ```
 [plugin.checks.sabanote]
-command = ["check-sabanote", "alert", "-m", "MONITOR_ID"]
+command = ["/opt/mackerel-agent/plugins/bin/check-sabanote", "alert", "-m", "MONITOR_ID"]
 ```
 
 または
@@ -83,6 +84,19 @@ command = ["check-sabanote", "alert", "-m", "MONITOR_ID"]
 ```
 [plugin.checks.sabanote]
 command = ["check-sabanote", "annotation",  "-m", "MONITOR_ID", "-s", "SERVICE_NAME", "-r", "ROLE_NAME"]
+```
+
+##### Windows
+```
+[plugin.checks.sabanote]
+command = ["plugins\\bin\\check-sabanote.exe", "alert", "-m", "MONITOR_ID"]
+```
+
+または
+
+```
+[plugin.checks.sabanote]
+command = ["plugins\\bin\\check-sabanote.exe", "annotation",  "-m", "MONITOR_ID", "-s", "SERVICE_NAME", "-r", "ROLE_NAME"]
 ```
 
 ## 使い方
@@ -124,7 +138,7 @@ connectivity エラーが発生している状態でも簡易データベース�
 
 ## データベースの参照
 
-データベースに保存されている情報を参照するために、`show-sabanote` コマンドを用意しています。
+データベースに保存されている情報を参照するために、`show-sabanote` コマンドを用意しています（リリースアーカイブ内に収録）。
 
 ```
 show-sabanote データベースファイル
