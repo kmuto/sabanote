@@ -67,7 +67,7 @@ The record written by default depends on the operating system.
 This plug-in can be installed with the `mkr` command.
 
 ```
-sudo mkr plugin install github.com/kmuto/sabanote
+sudo mkr plugin install kmuto/sabanote
 ```
 
 Describe the plugin configuration in your mackerel-agent.conf.

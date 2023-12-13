@@ -68,7 +68,7 @@ check-sabanote -m MONITOR_ID1 -m MONITOR_ID2 -s SERVICE -r ROLE1 -r ROLE2
 プラグインは `mkr` コマンドでインストールできます。
 
 ```
-sudo mkr plugin install github.com/kmuto/sabanote
+sudo mkr plugin install kmuto/sabanote
 ```
 
 mackerel-agent.conf にプラグインの設定を記述してください。
