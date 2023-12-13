@@ -72,16 +72,30 @@ sudo mkr plugin install kmuto/sabanote
 
 Describe the plugin configuration in your mackerel-agent.conf.
 
+##### Linux
 ```
 [plugin.checks.sabanote]
-command = ["check-sabanote", "alert", "-m", "MONITOR_ID"]
+command = ["/opt/mackerel-agent/plugins/bin/check-sabanote", "alert", "-m", "MONITOR_ID"]
 ```
 
 or
 
 ```
 [plugin.checks.sabanote]
-command = ["check-sabanote", "annotation", "-m", "MONITOR_ID", "-s", "SERVICE_NAME", "-r", "ROLE_NAME"]
+command = ["check-sabanote", "annotation",  "-m", "MONITOR_ID", "-s", "SERVICE_NAME", "-r", "ROLE_NAME"]
+```
+
+##### Windows
+```
+[plugin.checks.sabanote]
+command = ["plugins\\bin\\check-sabanote.exe", "alert", "-m", "MONITOR_ID"]
+```
+
+or
+
+```
+[plugin.checks.sabanote]
+command = ["plugins\\bin\\check-sabanote.exe", "annotation",  "-m", "MONITOR_ID", "-s", "SERVICE_NAME", "-r", "ROLE_NAME"]
 ```
 
 ## Usage
@@ -123,7 +137,7 @@ The check plugin itself returns only OK or Unknown (e.g., command execution fail
 
 ## Query the database
 
-The `show-sabanote` command is provided to query information stored in the database.
+The `show-sabanote` command in the release archive is provided to query information stored in the database.
 
 ```
 show-sabanote <database-file>

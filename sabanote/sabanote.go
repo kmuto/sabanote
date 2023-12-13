@@ -170,7 +170,17 @@ func (opts *sabanoteOpts) run() *checkers.Checker {
 
 	conf, err := config.LoadConfig(config.DefaultConfig.Conffile)
 	if err != nil {
-		return checkers.Unknown(fmt.Sprintf("%v", err))
+		if runtime.GOOS == "windows" {
+			newpath := filepath.Join(config.DefaultConfig.Conffile, "../../../mackerel-agent.conf")
+			conf, err = config.LoadConfig(newpath)
+			conf.Conffile = newpath
+			conf.Root = filepath.Dir(newpath)
+			if err != nil {
+				return checkers.Unknown(fmt.Sprintf("%v", err))
+			}
+		} else {
+			return checkers.Unknown(fmt.Sprintf("%v", err))
+		}
 	}
 
 	if apikey == "" {
