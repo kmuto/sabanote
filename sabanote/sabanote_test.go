@@ -535,7 +535,7 @@ func TestPostInfo_Annotation(t *testing.T) {
 	assert.Equal(t, false, p, "alert + 3min not posted")
 }
 
-func TestVacuumDB(t *testing.T) {
+func TestDeleteOld(t *testing.T) {
 	dir, _ := os.MkdirTemp("", "sabanote-test")
 	defer os.RemoveAll(dir)
 
@@ -553,7 +553,7 @@ func TestVacuumDB(t *testing.T) {
 	_ = writeInfo(db, 100000-60*60+1, opts)   // 6h-1 ago
 	_ = writeInfo(db, 100000, opts)
 
-	_ = vacuumDB(db, 100000, 60*6) // 6 h
+	_ = deleteOld(db, 100000, 60*6) // 6 h
 
 	v, _, _ := findReport(db, 100000)
 	assert.Equal(t, "Result 100000", string(v), "now time exists")
@@ -563,6 +563,33 @@ func TestVacuumDB(t *testing.T) {
 	assert.Equal(t, "", string(v), "6h ago is removed")
 	v, _, _ = findReport(db, 96399) // 10000-60*60*6-1
 	assert.Equal(t, "", string(v), "6h+1m ago is removed")
+}
+
+func TestVacuumDB(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "sabanote-test")
+	defer os.RemoveAll(dir)
+
+	opts := &sabanoteOpts{
+		StateDir: dir,
+		Test:     true,
+	}
+
+	sqlfile := filepath.Join(opts.StateDir, "sabanote.db")
+	db, _ := sql.Open("sqlite", sqlfile)
+	defer db.Close()
+	_ = createTable(db)
+
+	for i := 0; i < 1000; i++ {
+		_ = writeInfo(db, int64(i), opts)
+	}
+	_ = deleteOld(db, 100000, 1)
+
+	stat, _ := os.Stat(sqlfile)
+	before := stat.Size()
+	_ = vacuumDB(db)
+	stat, _ = os.Stat(sqlfile)
+	after := stat.Size()
+	assert.Less(t, after, before, "database is cleaned by vacuum")
 }
 
 func TestReplaceTitle(t *testing.T) {

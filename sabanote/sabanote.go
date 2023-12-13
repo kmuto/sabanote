@@ -232,6 +232,28 @@ func updateLastAlertCheckedTime(db *sql.DB, now int64) error {
 	return err
 }
 
+func findLastVacuumedTime(db *sql.DB) (int64, error) {
+	rows, err := db.Query("SELECT value FROM metainfo WHERE key = 'lastVacuumed' LIMIT 1")
+	var t int64
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+		var s string
+		err = rows.Scan(&s)
+		if err != nil {
+			return 0, err
+		}
+		t, _ = strconv.ParseInt(s, 10, 64)
+	}
+	return t, nil
+}
+
+func updateLastVacuumedTime(db *sql.DB, now int64) error {
+	_, err := db.Exec("INSERT OR REPLACE INTO metainfo VALUES ($1, $2)", "lastVacuumed", now)
+	return err
+}
+
 func findReport(db *sql.DB, time int64) (string, bool, error) {
 	rows, err := db.Query("SELECT report, posted FROM reports WHERE time = $1", time)
 	if err != nil {
@@ -297,10 +319,34 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 		if opts.Verbose {
 			fmt.Fprintln(os.Stderr, "[info] cleanup")
 		}
-		err := vacuumDB(db, now, retentionMinutes)
+		err := deleteOld(db, now, retentionMinutes)
 		if err != nil {
 			return checkers.Unknown(fmt.Sprintf("%v", err))
 		}
+
+		lastVacuumedTime, err := findLastVacuumedTime(db)
+		if err != nil {
+			return checkers.Unknown(fmt.Sprintf("%v", err))
+		}
+		if lastVacuumedTime == 0 {
+			err = updateLastVacuumedTime(db, now)
+			if err != nil {
+				return checkers.Unknown(fmt.Sprintf("%v", err))
+			}
+		} else if lastVacuumedTime+retentionMinutes*60 <= now {
+			if opts.Verbose {
+				fmt.Fprintln(os.Stderr, "[info] vacuum")
+			}
+			err := vacuumDB(db)
+			if err != nil {
+				return checkers.Unknown(fmt.Sprintf("%v", err))
+			}
+			err = updateLastVacuumedTime(db, now)
+			if err != nil {
+				return checkers.Unknown(fmt.Sprintf("%v", err))
+			}
+		}
+
 		return checkers.Ok("running")
 	} else {
 		err := updateLastAlertCheckedTime(db, now)
@@ -645,8 +691,17 @@ func postInfo_Annotation(alert *mackerel.Alert, client *mackerel.Client, db *sql
 	return nil
 }
 
-func vacuumDB(db *sql.DB, now int64, retentionMinutes int) error {
+func deleteOld(db *sql.DB, now int64, retentionMinutes int) error {
 	_, err := db.Exec("DELETE FROM reports WHERE time < $1", now-int64(retentionMinutes*60))
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func vacuumDB(db *sql.DB) error {
+	_, err := db.Exec("VACUUM")
 	if err != nil {
 		return err
 	}
