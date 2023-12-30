@@ -176,10 +176,10 @@ func (opts *sabanoteOpts) run() *checkers.Checker {
 			conf.Conffile = newpath
 			conf.Root = filepath.Dir(newpath)
 			if err != nil {
-				return checkers.Unknown(fmt.Sprintf("%v", err))
+				return checkers.Unknown(err.Error())
 			}
 		} else {
-			return checkers.Unknown(fmt.Sprintf("%v", err))
+			return checkers.Unknown(err.Error())
 		}
 	}
 
@@ -204,7 +204,7 @@ func (opts *sabanoteOpts) run() *checkers.Checker {
 	client, err := mackerel.NewClientWithOptions(apikey, apibase, false)
 	client.HTTPClient.Timeout = timeOut
 	if err != nil {
-		return checkers.Unknown(fmt.Sprintf("%v", err))
+		return checkers.Unknown(err.Error())
 	}
 
 	return handleInfo(client, opts)
@@ -302,17 +302,17 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 
 	err = createTable(db)
 	if err != nil {
-		return checkers.Unknown(fmt.Sprintf("%v", err))
+		return checkers.Unknown(err.Error())
 	}
 
 	err = writeInfo(db, now, opts)
 	if err != nil {
-		return checkers.Unknown(fmt.Sprintf("%v", err))
+		return checkers.Unknown(err.Error())
 	}
 
 	lastCheckTime, err := findLastAlertCheckedTime(db)
 	if err != nil {
-		return checkers.Unknown(fmt.Sprintf("%v", err))
+		return checkers.Unknown(err.Error())
 	}
 
 	if opts.AlertFreq > 0 && lastCheckTime+int64(opts.AlertFreq*60) > now {
@@ -321,17 +321,17 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 		}
 		err := deleteOld(db, now, retentionMinutes)
 		if err != nil {
-			return checkers.Unknown(fmt.Sprintf("%v", err))
+			return checkers.Unknown(err.Error())
 		}
 
 		lastVacuumedTime, err := findLastVacuumedTime(db)
 		if err != nil {
-			return checkers.Unknown(fmt.Sprintf("%v", err))
+			return checkers.Unknown(err.Error())
 		}
 		if lastVacuumedTime == 0 {
 			err = updateLastVacuumedTime(db, now)
 			if err != nil {
-				return checkers.Unknown(fmt.Sprintf("%v", err))
+				return checkers.Unknown(err.Error())
 			}
 		} else if lastVacuumedTime+retentionMinutes*60 <= now {
 			if opts.Verbose {
@@ -339,11 +339,11 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 			}
 			err := vacuumDB(db)
 			if err != nil {
-				return checkers.Unknown(fmt.Sprintf("%v", err))
+				return checkers.Unknown(err.Error())
 			}
 			err = updateLastVacuumedTime(db, now)
 			if err != nil {
-				return checkers.Unknown(fmt.Sprintf("%v", err))
+				return checkers.Unknown(err.Error())
 			}
 		}
 
@@ -351,7 +351,7 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 	} else {
 		err := updateLastAlertCheckedTime(db, now)
 		if err != nil {
-			return checkers.Unknown(fmt.Sprintf("%v", err))
+			return checkers.Unknown(err.Error())
 		}
 	}
 	if opts.AlertFreq == 0 {
@@ -360,7 +360,7 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 
 	connection, alerts, err := getAlerts(client, opts)
 	if err != nil {
-		return checkers.Unknown(fmt.Sprintf("%v", err))
+		return checkers.Unknown(err.Error())
 	}
 	if opts.Verbose {
 		fmt.Fprintf(os.Stderr, "[info] connection status: %v, alerts size: %v\n", connection, len(alerts))
@@ -368,7 +368,7 @@ func handleInfo(client *mackerel.Client, opts *sabanoteOpts) *checkers.Checker {
 
 	alert, err := matchAlert(connection, alerts, opts)
 	if err != nil {
-		return checkers.Unknown(fmt.Sprintf("%v", err))
+		return checkers.Unknown(err.Error())
 	}
 
 	if alert != nil {
